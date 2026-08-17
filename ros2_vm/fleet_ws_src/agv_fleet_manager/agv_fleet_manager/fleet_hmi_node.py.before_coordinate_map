@@ -1,0 +1,2053 @@
+#!/usr/bin/env python3
+
+import json
+import sys
+import time
+from pathlib import Path
+from typing import Dict, List
+
+import rclpy
+from ament_index_python.packages import (
+    get_package_share_directory,
+)
+from rclpy.node import Node
+from std_msgs.msg import String
+
+from PyQt5.QtCore import QPointF, Qt, QTimer
+from PyQt5.QtGui import (
+    QBrush,
+    QColor,
+    QFont,
+    QPainter,
+    QPen,
+)
+from PyQt5.QtWidgets import (
+    QApplication,
+    QComboBox,
+    QGraphicsEllipseItem,
+    QGraphicsLineItem,
+    QGraphicsScene,
+    QGraphicsTextItem,
+    QGraphicsView,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QPushButton,
+    QPlainTextEdit,
+    QTableWidget,
+    QTableWidgetItem,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
+
+
+class FleetHMINode(Node):
+    def __init__(self) -> None:
+        super().__init__(
+            "fleet_hmi_node"
+        )
+
+        self.status = {}
+        self.reservations = {}
+        self.queue = []
+        self.events: List[str] = []
+
+        self.create_subscription(
+            String,
+            "/fleet/status",
+            self.status_callback,
+            10,
+        )
+
+        self.create_subscription(
+            String,
+            "/fleet/reservations",
+            self.reservations_callback,
+            10,
+        )
+
+        self.create_subscription(
+            String,
+            "/fleet/queue",
+            self.queue_callback,
+            10,
+        )
+
+        self.create_subscription(
+            String,
+            "/fleet/event",
+            self.event_callback,
+            10,
+        )
+
+        self.dispatch_pub = (
+            self.create_publisher(
+                String,
+                "/fleet/dispatch",
+                10,
+            )
+        )
+
+        self.cancel_pub = (
+            self.create_publisher(
+                String,
+                "/fleet/cancel",
+                10,
+            )
+        )
+
+        self.resume_pub = (
+            self.create_publisher(
+                String,
+                "/fleet/resume",
+                10,
+            )
+        )
+
+        self.set_node_pub = (
+            self.create_publisher(
+                String,
+                "/fleet/set_current_node",
+                10,
+            )
+        )
+
+        self.estop_pub = (
+            self.create_publisher(
+                String,
+                "/fleet/estop",
+                10,
+            )
+        )
+
+        self.reset_pub = (
+            self.create_publisher(
+                String,
+                "/fleet/reset",
+                10,
+            )
+        )
+
+    def status_callback(
+        self,
+        msg: String,
+    ) -> None:
+        try:
+            self.status = json.loads(
+                msg.data
+            )
+        except Exception:
+            pass
+
+    def reservations_callback(
+        self,
+        msg: String,
+    ) -> None:
+        try:
+            self.reservations = (
+                json.loads(
+                    msg.data
+                )
+            )
+        except Exception:
+            pass
+
+    def queue_callback(
+        self,
+        msg: String,
+    ) -> None:
+        try:
+            self.queue = json.loads(
+                msg.data
+            )
+        except Exception:
+            pass
+
+    def event_callback(
+        self,
+        msg: String,
+    ) -> None:
+        timestamp = time.strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+
+        self.events.append(
+            f"[{timestamp}] {msg.data}"
+        )
+
+        self.events = (
+            self.events[-1000:]
+        )
+
+    @staticmethod
+    def publish_json(
+        publisher,
+        payload: dict,
+    ) -> None:
+        msg = String()
+        msg.data = json.dumps(
+            payload
+        )
+        publisher.publish(msg)
+
+    def dispatch(
+        self,
+        robot: str,
+        destination: str,
+    ) -> None:
+        self.publish_json(
+            self.dispatch_pub,
+            {
+                "robot": robot,
+                "destination":
+                    destination,
+            },
+        )
+
+    def cancel(
+        self,
+        robot: str,
+    ) -> None:
+        self.publish_json(
+            self.cancel_pub,
+            {
+                "robot": robot,
+            },
+        )
+
+    def resume(
+        self,
+        robot: str,
+    ) -> None:
+        self.publish_json(
+            self.resume_pub,
+            {
+                "robot": robot,
+            },
+        )
+
+    def set_node(
+        self,
+        robot: str,
+        node: str,
+    ) -> None:
+        self.publish_json(
+            self.set_node_pub,
+            {
+                "robot": robot,
+                "node": node,
+            },
+        )
+
+    def estop(
+        self,
+        robot: str,
+    ) -> None:
+        self.publish_json(
+            self.estop_pub,
+            {
+                "robot": robot,
+            },
+        )
+
+    def reset(
+        self,
+        robot: str,
+    ) -> None:
+        self.publish_json(
+            self.reset_pub,
+            {
+                "robot": robot,
+            },
+        )
+
+
+class TrackView(QGraphicsView):
+    ROBOT_COLORS = {
+        "agv_1":
+            QColor("#26a7ff"),
+
+        "agv_2":
+            QColor("#ff9f1c"),
+    }
+
+    def __init__(
+        self,
+        config: dict,
+    ) -> None:
+        super().__init__()
+
+        self.config = config
+
+        self.track_scene = (
+            QGraphicsScene(self)
+        )
+
+        self.setScene(
+            self.track_scene
+        )
+
+        self.setRenderHint(
+            QPainter.Antialiasing
+        )
+
+        self.setBackgroundBrush(
+            QColor("#0b1016")
+        )
+
+        self.setMinimumHeight(390)
+
+        self.setDragMode(
+            QGraphicsView.ScrollHandDrag
+        )
+
+        self.edge_items: Dict[
+            tuple,
+            QGraphicsLineItem,
+        ] = {}
+
+        self.robot_items: Dict[
+            str,
+            QGraphicsEllipseItem,
+        ] = {}
+
+        self.robot_labels: Dict[
+            str,
+            QGraphicsTextItem,
+        ] = {}
+
+        self.build_graph()
+
+    def point(
+        self,
+        node_name: str,
+    ) -> QPointF:
+        info = self.config[
+            "nodes"
+        ][node_name]
+
+        return QPointF(
+            float(info["x"]),
+            float(info["y"]),
+        )
+
+    @staticmethod
+    def edge_key(
+        node_a: str,
+        node_b: str,
+    ) -> tuple:
+        return tuple(
+            sorted(
+                (
+                    node_a,
+                    node_b,
+                )
+            )
+        )
+
+    def build_graph(self) -> None:
+        default_pen = QPen(
+            QColor("#465566"),
+            4,
+        )
+
+        for (
+            node_a,
+            node_b,
+        ) in self.config[
+            "connections"
+        ]:
+            point_a = self.point(
+                node_a
+            )
+
+            point_b = self.point(
+                node_b
+            )
+
+            line = (
+                self.track_scene.addLine(
+                    point_a.x(),
+                    point_a.y(),
+                    point_b.x(),
+                    point_b.y(),
+                    default_pen,
+                )
+            )
+
+            line.setZValue(1)
+
+            self.edge_items[
+                self.edge_key(
+                    node_a,
+                    node_b,
+                )
+            ] = line
+
+        for (
+            node_name,
+            info,
+        ) in self.config[
+            "nodes"
+        ].items():
+            point = self.point(
+                node_name
+            )
+
+            node_type = info.get(
+                "type",
+                "junction",
+            )
+
+            radius = (
+                10
+                if node_type
+                == "junction"
+                else 14
+            )
+
+            fill_color = (
+                QColor("#d8dee9")
+                if node_type
+                == "junction"
+                else QColor("#8aa4bf")
+            )
+
+            node_item = (
+                self.track_scene.addEllipse(
+                    point.x() - radius,
+                    point.y() - radius,
+                    radius * 2,
+                    radius * 2,
+                    QPen(
+                        QColor("#101820"),
+                        2,
+                    ),
+                    QBrush(fill_color),
+                )
+            )
+
+            node_item.setZValue(3)
+
+            label = (
+                self.track_scene.addText(
+                    node_name
+                )
+            )
+
+            label.setDefaultTextColor(
+                QColor("#e6edf3")
+            )
+
+            label.setFont(
+                QFont(
+                    "DejaVu Sans",
+                    9,
+                    QFont.Bold,
+                )
+            )
+
+            label.setPos(
+                point.x() + 12,
+                point.y() - 24,
+            )
+
+            label.setZValue(4)
+
+        for robot_name in (
+            "agv_1",
+            "agv_2",
+        ):
+            color = self.ROBOT_COLORS[
+                robot_name
+            ]
+
+            robot_item = (
+                self.track_scene.addEllipse(
+                    -11,
+                    -11,
+                    22,
+                    22,
+                    QPen(
+                        QColor("#ffffff"),
+                        2,
+                    ),
+                    QBrush(color),
+                )
+            )
+
+            robot_item.setVisible(
+                False
+            )
+
+            robot_item.setZValue(10)
+
+            self.robot_items[
+                robot_name
+            ] = robot_item
+
+            label = (
+                self.track_scene.addText(
+                    robot_name.upper()
+                )
+            )
+
+            label.setDefaultTextColor(
+                color
+            )
+
+            label.setFont(
+                QFont(
+                    "DejaVu Sans",
+                    9,
+                    QFont.Bold,
+                )
+            )
+
+            label.setVisible(False)
+            label.setZValue(11)
+
+            self.robot_labels[
+                robot_name
+            ] = label
+
+        scene_rect = (
+            self.track_scene
+            .itemsBoundingRect()
+            .adjusted(
+                -60,
+                -60,
+                100,
+                100,
+            )
+        )
+
+        self.track_scene.setSceneRect(
+            scene_rect
+        )
+
+        self.fitInView(
+            scene_rect,
+            Qt.KeepAspectRatio,
+        )
+
+    def resizeEvent(
+        self,
+        event,
+    ) -> None:
+        super().resizeEvent(
+            event
+        )
+
+        self.fitInView(
+            self.track_scene.sceneRect(),
+            Qt.KeepAspectRatio,
+        )
+
+    def update_fleet(
+        self,
+        status: dict,
+        reservations: dict,
+    ) -> None:
+        default_pen = QPen(
+            QColor("#465566"),
+            4,
+        )
+
+        for edge_item in (
+            self.edge_items.values()
+        ):
+            edge_item.setPen(
+                default_pen
+            )
+
+        for (
+            robot_name,
+            reservation,
+        ) in reservations.items():
+            color = (
+                self.ROBOT_COLORS.get(
+                    robot_name,
+                    QColor("#b388ff"),
+                )
+            )
+
+            reservation_pen = QPen(
+                color,
+                8,
+            )
+
+            reservation_pen.setCapStyle(
+                Qt.RoundCap
+            )
+
+            path = reservation.get(
+                "path",
+                [],
+            )
+
+            for index in range(
+                len(path) - 1
+            ):
+                key = self.edge_key(
+                    path[index],
+                    path[index + 1],
+                )
+
+                edge_item = (
+                    self.edge_items.get(
+                        key
+                    )
+                )
+
+                if edge_item is not None:
+                    edge_item.setPen(
+                        reservation_pen
+                    )
+
+        robots = status.get(
+            "robots",
+            {},
+        )
+
+        for (
+            robot_name,
+            robot_item,
+        ) in self.robot_items.items():
+            robot_data = robots.get(
+                robot_name,
+                {},
+            )
+
+            current_node = (
+                robot_data.get(
+                    "current_node",
+                    "",
+                )
+            )
+
+            if (
+                current_node
+                not in self.config["nodes"]
+            ):
+                robot_item.setVisible(
+                    False
+                )
+
+                self.robot_labels[
+                    robot_name
+                ].setVisible(False)
+
+                continue
+
+            point = self.point(
+                current_node
+            )
+
+            offset = (
+                -13
+                if robot_name
+                == "agv_1"
+                else 13
+            )
+
+            robot_item.setPos(
+                point.x() + offset,
+                point.y(),
+            )
+
+            robot_item.setVisible(
+                True
+            )
+
+            label = self.robot_labels[
+                robot_name
+            ]
+
+            label.setPos(
+                point.x()
+                + offset
+                - 23,
+                point.y() + 15,
+            )
+
+            label.setVisible(
+                True
+            )
+
+
+class RobotCard(QGroupBox):
+    def __init__(
+        self,
+        robot_name: str,
+        destination_nodes: List[str],
+        all_nodes: List[str],
+        main_window,
+    ) -> None:
+        super().__init__(
+            robot_name.upper()
+        )
+
+        self.robot_name = robot_name
+        self.main_window = main_window
+
+        layout = QGridLayout(self)
+
+        self.values: Dict[
+            str,
+            QLabel,
+        ] = {}
+
+        fields = [
+            ("Communication", "online"),
+            ("Safety", "safety"),
+            ("Current node", "current_node"),
+            ("Destination", "destination"),
+            ("Mission", "mission"),
+            ("Obstacle", "obstacle"),
+            ("Safety hold", "hold"),
+            ("Reservation", "reservation"),
+        ]
+
+        for (
+            row,
+            field,
+        ) in enumerate(fields):
+            label_text, key = field
+
+            label = QLabel(
+                label_text
+            )
+
+            label.setObjectName(
+                "fieldLabel"
+            )
+
+            value = QLabel("-")
+
+            value.setObjectName(
+                "fieldValue"
+            )
+
+            layout.addWidget(
+                label,
+                row,
+                0,
+            )
+
+            layout.addWidget(
+                value,
+                row,
+                1,
+            )
+
+            self.values[key] = value
+
+        row = len(fields)
+
+        self.destination_combo = (
+            QComboBox()
+        )
+
+        self.destination_combo.addItems(
+            destination_nodes
+        )
+
+        self.dispatch_button = (
+            QPushButton(
+                "DISPATCH MISSION"
+            )
+        )
+
+        self.dispatch_button.setObjectName(
+            "primaryButton"
+        )
+
+        self.dispatch_button.clicked.connect(
+            self.dispatch_clicked
+        )
+
+        layout.addWidget(
+            QLabel(
+                "Mission destination"
+            ),
+            row,
+            0,
+        )
+
+        layout.addWidget(
+            self.destination_combo,
+            row,
+            1,
+        )
+
+        layout.addWidget(
+            self.dispatch_button,
+            row + 1,
+            0,
+            1,
+            2,
+        )
+
+        self.cancel_button = (
+            QPushButton(
+                "CANCEL"
+            )
+        )
+
+        self.cancel_button.setObjectName(
+            "warningButton"
+        )
+
+        self.cancel_button.clicked.connect(
+            self.cancel_clicked
+        )
+
+        self.resume_button = (
+            QPushButton(
+                "RESUME"
+            )
+        )
+
+        self.resume_button.setObjectName(
+            "primaryButton"
+        )
+
+        self.resume_button.clicked.connect(
+            self.resume_clicked
+        )
+
+        action_layout = QHBoxLayout()
+
+        action_layout.addWidget(
+            self.cancel_button
+        )
+
+        action_layout.addWidget(
+            self.resume_button
+        )
+
+        layout.addLayout(
+            action_layout,
+            row + 2,
+            0,
+            1,
+            2,
+        )
+
+        self.node_combo = QComboBox()
+
+        self.node_combo.addItems(
+            all_nodes
+        )
+
+        self.set_node_button = (
+            QPushButton(
+                "SET CONFIRMED NODE"
+            )
+        )
+
+        self.set_node_button.setObjectName(
+            "secondaryButton"
+        )
+
+        self.set_node_button.clicked.connect(
+            self.set_node_clicked
+        )
+
+        layout.addWidget(
+            QLabel(
+                "Initialization node"
+            ),
+            row + 3,
+            0,
+        )
+
+        layout.addWidget(
+            self.node_combo,
+            row + 3,
+            1,
+        )
+
+        layout.addWidget(
+            self.set_node_button,
+            row + 4,
+            0,
+            1,
+            2,
+        )
+
+        self.estop_button = (
+            QPushButton(
+                "E-STOP"
+            )
+        )
+
+        self.estop_button.setObjectName(
+            "dangerButton"
+        )
+
+        self.estop_button.clicked.connect(
+            self.estop_clicked
+        )
+
+        self.reset_button = (
+            QPushButton(
+                "RESET E-STOP / FAULT"
+            )
+        )
+
+        self.reset_button.setObjectName(
+            "secondaryButton"
+        )
+
+        self.reset_button.clicked.connect(
+            self.reset_clicked
+        )
+
+        stop_layout = QHBoxLayout()
+
+        stop_layout.addWidget(
+            self.estop_button
+        )
+
+        stop_layout.addWidget(
+            self.reset_button
+        )
+
+        layout.addLayout(
+            stop_layout,
+            row + 5,
+            0,
+            1,
+            2,
+        )
+
+    def dispatch_clicked(self) -> None:
+        self.main_window.dispatch(
+            self.robot_name,
+            self.destination_combo
+            .currentText()
+            .strip(),
+        )
+
+    def cancel_clicked(self) -> None:
+        self.main_window.cancel(
+            self.robot_name
+        )
+
+    def resume_clicked(self) -> None:
+        self.main_window.resume(
+            self.robot_name
+        )
+
+    def set_node_clicked(self) -> None:
+        self.main_window.set_node(
+            self.robot_name,
+            self.node_combo
+            .currentText()
+            .strip(),
+        )
+
+    def estop_clicked(self) -> None:
+        self.main_window.estop(
+            self.robot_name
+        )
+
+    def reset_clicked(self) -> None:
+        self.main_window.reset_robot(
+            self.robot_name
+        )
+
+    @staticmethod
+    def style_indicator(
+        widget: QLabel,
+        state: str,
+    ) -> None:
+        colors = {
+            "good": "#32c766",
+            "warning": "#ffb020",
+            "bad": "#ff4d4f",
+            "neutral": "#d0d7de",
+            "blue": "#26a7ff",
+        }
+
+        color = colors.get(
+            state,
+            colors["neutral"],
+        )
+
+        widget.setStyleSheet(
+            f"color: {color};"
+            "font-weight: 700;"
+        )
+
+    def update_data(
+        self,
+        data: dict,
+        reservation: dict,
+    ) -> None:
+        online = bool(
+            data.get(
+                "online",
+                False,
+            )
+        )
+
+        safety_ok = bool(
+            data.get(
+                "safety_ok",
+                False,
+            )
+        )
+
+        mission_active = bool(
+            data.get(
+                "mission_active",
+                False,
+            )
+        )
+
+        hold_active = bool(
+            data.get(
+                "hold_active",
+                False,
+            )
+        )
+
+        resume_allowed = bool(
+            data.get(
+                "resume_allowed",
+                False,
+            )
+        )
+
+        obstacle = str(
+            data.get(
+                "obstacle_state",
+                "UNKNOWN",
+            )
+        )
+
+        self.values[
+            "online"
+        ].setText(
+            "ONLINE"
+            if online
+            else "OFFLINE"
+        )
+
+        self.style_indicator(
+            self.values["online"],
+            "good"
+            if online
+            else "bad",
+        )
+
+        safety_text = (
+            "OK"
+            if safety_ok
+            else str(
+                data.get(
+                    "safety_state",
+                    "UNKNOWN",
+                )
+            )
+        )
+
+        self.values[
+            "safety"
+        ].setText(
+            safety_text
+        )
+
+        self.style_indicator(
+            self.values["safety"],
+            "good"
+            if safety_ok
+            else "bad",
+        )
+
+        self.values[
+            "current_node"
+        ].setText(
+            str(
+                data.get(
+                    "current_node",
+                    "",
+                )
+            )
+            or "UNKNOWN"
+        )
+
+        self.values[
+            "destination"
+        ].setText(
+            str(
+                data.get(
+                    "destination",
+                    "",
+                )
+            )
+            or "-"
+        )
+
+        mission_state = str(
+            data.get(
+                "mission_state",
+                "UNKNOWN",
+            )
+        )
+
+        self.values[
+            "mission"
+        ].setText(
+            f"{mission_state} / "
+            f"{'ACTIVE' if mission_active else 'IDLE'}"
+        )
+
+        self.values[
+            "obstacle"
+        ].setText(
+            obstacle
+        )
+
+        obstacle_style = (
+            "good"
+            if obstacle == "CLEAR"
+            else "warning"
+            if obstacle == "WARNING"
+            else "bad"
+        )
+
+        self.style_indicator(
+            self.values["obstacle"],
+            obstacle_style,
+        )
+
+        self.values[
+            "hold"
+        ].setText(
+            "ACTIVE"
+            if hold_active
+            else "INACTIVE"
+        )
+
+        self.style_indicator(
+            self.values["hold"],
+            "warning"
+            if hold_active
+            else "good",
+        )
+
+        if reservation:
+            path = reservation.get(
+                "path",
+                [],
+            )
+
+            self.values[
+                "reservation"
+            ].setText(
+                " → ".join(path)
+            )
+
+            self.style_indicator(
+                self.values[
+                    "reservation"
+                ],
+                "blue",
+            )
+
+        else:
+            self.values[
+                "reservation"
+            ].setText(
+                "NONE"
+            )
+
+            self.style_indicator(
+                self.values[
+                    "reservation"
+                ],
+                "neutral",
+            )
+
+        pending = bool(
+            data.get(
+                "pending_destination",
+                "",
+            )
+        )
+
+        self.dispatch_button.setEnabled(
+            online
+            and safety_ok
+            and bool(
+                data.get(
+                    "current_node",
+                    "",
+                )
+            )
+            and not mission_active
+            and not hold_active
+            and not reservation
+            and not pending
+        )
+
+        self.cancel_button.setEnabled(
+            mission_active
+            or bool(reservation)
+            or pending
+        )
+
+        self.resume_button.setEnabled(
+            online
+            and safety_ok
+            and hold_active
+            and resume_allowed
+            and bool(reservation)
+        )
+
+        self.set_node_button.setEnabled(
+            online
+            and not mission_active
+            and not reservation
+            and not pending
+        )
+
+
+class FleetHMI(QMainWindow):
+    def __init__(
+        self,
+        ros_node: FleetHMINode,
+        config: dict,
+    ) -> None:
+        super().__init__()
+
+        self.ros_node = ros_node
+        self.config = config
+
+        self.setWindowTitle(
+            "Industrial AGV Fleet Control"
+        )
+
+        self.setMinimumSize(
+            1280,
+            820,
+        )
+
+        central_widget = QWidget()
+
+        self.setCentralWidget(
+            central_widget
+        )
+
+        main_layout = QVBoxLayout(
+            central_widget
+        )
+
+        header_layout = QHBoxLayout()
+
+        title = QLabel(
+            "AGV FLEET CONTROL"
+        )
+
+        title.setObjectName(
+            "mainTitle"
+        )
+
+        self.fleet_state_label = QLabel(
+            "STARTING"
+        )
+
+        self.fleet_state_label.setObjectName(
+            "fleetState"
+        )
+
+        self.clock_label = QLabel("--")
+
+        header_layout.addWidget(
+            title
+        )
+
+        header_layout.addStretch()
+
+        mode_label = QLabel(
+            "WHOLE-ROUTE TRAFFIC RESERVATION"
+        )
+
+        mode_label.setObjectName(
+            "modeLabel"
+        )
+
+        header_layout.addWidget(
+            mode_label
+        )
+
+        header_layout.addWidget(
+            self.fleet_state_label
+        )
+
+        header_layout.addWidget(
+            self.clock_label
+        )
+
+        main_layout.addLayout(
+            header_layout
+        )
+
+        top_layout = QHBoxLayout()
+
+        self.robot_cards: Dict[
+            str,
+            RobotCard,
+        ] = {}
+
+        all_nodes = list(
+            config["nodes"].keys()
+        )
+
+        destination_nodes = [
+            node_name
+            for (
+                node_name,
+                node_info,
+            ) in config[
+                "nodes"
+            ].items()
+            if node_info.get(
+                "type"
+            ) in {
+                "station",
+                "home",
+            }
+        ]
+
+        for robot_name in config[
+            "robots"
+        ]:
+            card = RobotCard(
+                robot_name,
+                destination_nodes,
+                all_nodes,
+                self,
+            )
+
+            self.robot_cards[
+                robot_name
+            ] = card
+
+            top_layout.addWidget(
+                card
+            )
+
+        self.track_view = TrackView(
+            config
+        )
+
+        top_layout.addWidget(
+            self.track_view,
+            2,
+        )
+
+        main_layout.addLayout(
+            top_layout,
+            2,
+        )
+
+        tabs = QTabWidget()
+
+        queue_widget = QWidget()
+        queue_layout = QVBoxLayout(
+            queue_widget
+        )
+
+        self.queue_table = QTableWidget(
+            0,
+            3,
+        )
+
+        self.queue_table.setHorizontalHeaderLabels(
+            [
+                "Robot",
+                "Destination",
+                "Request",
+            ]
+        )
+
+        queue_layout.addWidget(
+            self.queue_table
+        )
+
+        tabs.addTab(
+            queue_widget,
+            "Mission Queue",
+        )
+
+        reservation_widget = QWidget()
+
+        reservation_layout = QVBoxLayout(
+            reservation_widget
+        )
+
+        self.reservation_table = (
+            QTableWidget(
+                0,
+                4,
+            )
+        )
+
+        self.reservation_table.setHorizontalHeaderLabels(
+            [
+                "Robot",
+                "Destination",
+                "Reserved path",
+                "Request",
+            ]
+        )
+
+        reservation_layout.addWidget(
+            self.reservation_table
+        )
+
+        tabs.addTab(
+            reservation_widget,
+            "Reservations",
+        )
+
+        event_widget = QWidget()
+
+        event_layout = QVBoxLayout(
+            event_widget
+        )
+
+        self.event_log = (
+            QPlainTextEdit()
+        )
+
+        self.event_log.setReadOnly(
+            True
+        )
+
+        event_layout.addWidget(
+            self.event_log
+        )
+
+        tabs.addTab(
+            event_widget,
+            "Event Log",
+        )
+
+        main_layout.addWidget(
+            tabs,
+            1,
+        )
+
+        bottom_layout = QHBoxLayout()
+
+        self.fleet_estop_button = (
+            QPushButton(
+                "FLEET EMERGENCY STOP"
+            )
+        )
+
+        self.fleet_estop_button.setObjectName(
+            "fleetEstop"
+        )
+
+        self.fleet_estop_button.clicked.connect(
+            self.estop_all
+        )
+
+        self.fleet_reset_button = (
+            QPushButton(
+                "RESET ALL AGVs"
+            )
+        )
+
+        self.fleet_reset_button.setObjectName(
+            "secondaryButton"
+        )
+
+        self.fleet_reset_button.clicked.connect(
+            self.reset_all
+        )
+
+        bottom_layout.addWidget(
+            self.fleet_estop_button,
+            3,
+        )
+
+        bottom_layout.addWidget(
+            self.fleet_reset_button,
+            1,
+        )
+
+        main_layout.addLayout(
+            bottom_layout
+        )
+
+        self.apply_style()
+
+        self.ros_timer = QTimer(self)
+
+        self.ros_timer.timeout.connect(
+            self.spin_ros
+        )
+
+        self.ros_timer.start(20)
+
+        self.refresh_timer = QTimer(
+            self
+        )
+
+        self.refresh_timer.timeout.connect(
+            self.refresh_ui
+        )
+
+        self.refresh_timer.start(
+            250
+        )
+
+    def apply_style(self) -> None:
+        self.setStyleSheet(
+            """
+            QWidget {
+                background: #111820;
+                color: #e6edf3;
+                font-family: DejaVu Sans;
+                font-size: 13px;
+            }
+
+            QGroupBox {
+                border: 1px solid #35404d;
+                border-radius: 4px;
+                margin-top: 12px;
+                padding-top: 12px;
+                background: #18212b;
+                font-weight: 700;
+            }
+
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 12px;
+                padding: 0 5px;
+            }
+
+            QLabel#mainTitle {
+                font-size: 24px;
+                font-weight: 800;
+            }
+
+            QLabel#modeLabel {
+                background: #283646;
+                border: 1px solid #4d6075;
+                border-radius: 3px;
+                padding: 7px 10px;
+                font-weight: 700;
+            }
+
+            QLabel#fleetState {
+                padding: 7px 12px;
+                border-radius: 3px;
+                background: #6b5317;
+                font-weight: 800;
+            }
+
+            QLabel#fieldLabel {
+                color: #9fb0c0;
+            }
+
+            QLabel#fieldValue {
+                font-weight: 700;
+            }
+
+            QPushButton {
+                border: 1px solid #526274;
+                border-radius: 3px;
+                padding: 8px 12px;
+                font-weight: 800;
+            }
+
+            QPushButton:disabled {
+                color: #6e7781;
+                background: #2b3138;
+            }
+
+            QPushButton#primaryButton {
+                background: #145ea8;
+            }
+
+            QPushButton#secondaryButton {
+                background: #34495e;
+            }
+
+            QPushButton#warningButton {
+                background: #8a5a12;
+            }
+
+            QPushButton#dangerButton {
+                background: #9e1c23;
+                border-color: #d9363e;
+            }
+
+            QPushButton#fleetEstop {
+                background: #b71c1c;
+                border: 2px solid #ff5c5c;
+                min-height: 48px;
+                font-size: 16px;
+            }
+
+            QComboBox,
+            QTableWidget,
+            QPlainTextEdit {
+                background: #0b1016;
+                border: 1px solid #35404d;
+            }
+
+            QHeaderView::section {
+                background: #23303d;
+                color: #e6edf3;
+                padding: 6px;
+            }
+            """
+        )
+
+    def spin_ros(self) -> None:
+        rclpy.spin_once(
+            self.ros_node,
+            timeout_sec=0.0,
+        )
+
+    def refresh_ui(self) -> None:
+        self.clock_label.setText(
+            time.strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+        )
+
+        status = self.ros_node.status
+
+        reservations = (
+            self.ros_node.reservations
+        )
+
+        robots = status.get(
+            "robots",
+            {},
+        )
+
+        fleet_state = status.get(
+            "fleet_state",
+            "STARTING",
+        )
+
+        self.fleet_state_label.setText(
+            fleet_state
+        )
+
+        if fleet_state == "READY":
+            state_color = "#1d7a3f"
+
+        elif fleet_state == "ACTIVE":
+            state_color = "#145ea8"
+
+        elif fleet_state in {
+            "QUEUED",
+            "POSITION_UNKNOWN",
+        }:
+            state_color = "#8a5a12"
+
+        else:
+            state_color = "#9e1c23"
+
+        self.fleet_state_label.setStyleSheet(
+            f"background: {state_color};"
+            "padding: 7px 12px;"
+            "border-radius: 3px;"
+            "font-weight: 800;"
+        )
+
+        for (
+            robot_name,
+            card,
+        ) in self.robot_cards.items():
+            card.update_data(
+                robots.get(
+                    robot_name,
+                    {},
+                ),
+                reservations.get(
+                    robot_name,
+                    {},
+                ),
+            )
+
+        self.track_view.update_fleet(
+            status,
+            reservations,
+        )
+
+        self.update_queue_table()
+        self.update_reservation_table()
+
+        event_text = "\n".join(
+            self.ros_node.events
+        )
+
+        if (
+            self.event_log
+            .toPlainText()
+            != event_text
+        ):
+            self.event_log.setPlainText(
+                event_text
+            )
+
+            scrollbar = (
+                self.event_log
+                .verticalScrollBar()
+            )
+
+            scrollbar.setValue(
+                scrollbar.maximum()
+            )
+
+    def update_queue_table(self) -> None:
+        queue = self.ros_node.queue
+
+        self.queue_table.setRowCount(
+            len(queue)
+        )
+
+        for (
+            row,
+            request,
+        ) in enumerate(queue):
+            values = [
+                request.get(
+                    "robot",
+                    "",
+                ),
+                request.get(
+                    "destination",
+                    "",
+                ),
+                request.get(
+                    "request_id",
+                    "",
+                ),
+            ]
+
+            for (
+                column,
+                value,
+            ) in enumerate(values):
+                self.queue_table.setItem(
+                    row,
+                    column,
+                    QTableWidgetItem(
+                        str(value)
+                    ),
+                )
+
+        self.queue_table.resizeColumnsToContents()
+
+    def update_reservation_table(
+        self,
+    ) -> None:
+        reservations = list(
+            self.ros_node
+            .reservations
+            .items()
+        )
+
+        self.reservation_table.setRowCount(
+            len(reservations)
+        )
+
+        for (
+            row,
+            reservation_entry,
+        ) in enumerate(reservations):
+            robot_name, reservation = (
+                reservation_entry
+            )
+
+            values = [
+                robot_name,
+                reservation.get(
+                    "destination",
+                    "",
+                ),
+                " → ".join(
+                    reservation.get(
+                        "path",
+                        [],
+                    )
+                ),
+                reservation.get(
+                    "request_id",
+                    "",
+                ),
+            ]
+
+            for (
+                column,
+                value,
+            ) in enumerate(values):
+                self.reservation_table.setItem(
+                    row,
+                    column,
+                    QTableWidgetItem(
+                        str(value)
+                    ),
+                )
+
+        self.reservation_table.resizeColumnsToContents()
+
+    def confirm(
+        self,
+        title: str,
+        text: str,
+        critical: bool = False,
+    ) -> bool:
+        box = QMessageBox(self)
+
+        box.setWindowTitle(
+            title
+        )
+
+        box.setText(
+            text
+        )
+
+        box.setIcon(
+            QMessageBox.Critical
+            if critical
+            else QMessageBox.Warning
+        )
+
+        box.setStandardButtons(
+            QMessageBox.Yes
+            | QMessageBox.No
+        )
+
+        box.setDefaultButton(
+            QMessageBox.No
+        )
+
+        return (
+            box.exec_()
+            == QMessageBox.Yes
+        )
+
+    def dispatch(
+        self,
+        robot_name: str,
+        destination: str,
+    ) -> None:
+        confirmed = self.confirm(
+            "Confirm mission dispatch",
+            (
+                f"Dispatch {robot_name} "
+                f"to {destination}?\n\n"
+                "The fleet manager will request "
+                "the route, check all occupied "
+                "nodes and reservations, reserve "
+                "the complete route, and queue "
+                "the mission if it conflicts."
+            ),
+        )
+
+        if confirmed:
+            self.ros_node.dispatch(
+                robot_name,
+                destination,
+            )
+
+    def cancel(
+        self,
+        robot_name: str,
+    ) -> None:
+        confirmed = self.confirm(
+            "Confirm mission cancellation",
+            (
+                f"Cancel the active or queued "
+                f"mission for {robot_name}?"
+            ),
+        )
+
+        if confirmed:
+            self.ros_node.cancel(
+                robot_name
+            )
+
+    def resume(
+        self,
+        robot_name: str,
+    ) -> None:
+        confirmed = self.confirm(
+            "Confirm controlled resume",
+            (
+                f"Resume the safety-held "
+                f"mission for {robot_name}?"
+            ),
+        )
+
+        if confirmed:
+            self.ros_node.resume(
+                robot_name
+            )
+
+    def set_node(
+        self,
+        robot_name: str,
+        node_name: str,
+    ) -> None:
+        confirmed = self.confirm(
+            "Confirm physical position",
+            (
+                f"Confirm that {robot_name} "
+                f"is physically located at "
+                f"{node_name}.\n\n"
+                "This changes its mission "
+                "position reference."
+            ),
+            critical=True,
+        )
+
+        if confirmed:
+            self.ros_node.set_node(
+                robot_name,
+                node_name,
+            )
+
+    def estop(
+        self,
+        robot_name: str,
+    ) -> None:
+        confirmed = self.confirm(
+            "Emergency stop",
+            (
+                f"Send emergency stop "
+                f"to {robot_name}?"
+            ),
+            critical=True,
+        )
+
+        if confirmed:
+            self.ros_node.estop(
+                robot_name
+            )
+
+    def reset_robot(
+        self,
+        robot_name: str,
+    ) -> None:
+        confirmed = self.confirm(
+            "Reset robot",
+            (
+                f"Reset E-stop/fault state "
+                f"for {robot_name}?\n\n"
+                "Confirm the physical area "
+                "is safe before resetting."
+            ),
+            critical=True,
+        )
+
+        if confirmed:
+            self.ros_node.reset(
+                robot_name
+            )
+
+    def estop_all(self) -> None:
+        confirmed = self.confirm(
+            "Fleet emergency stop",
+            (
+                "Send emergency stop "
+                "to ALL AGVs?"
+            ),
+            critical=True,
+        )
+
+        if confirmed:
+            self.ros_node.estop(
+                "all"
+            )
+
+    def reset_all(self) -> None:
+        confirmed = self.confirm(
+            "Reset all robots",
+            (
+                "Reset E-stop/fault state "
+                "on ALL AGVs?\n\n"
+                "Confirm the complete operating "
+                "area is safe."
+            ),
+            critical=True,
+        )
+
+        if confirmed:
+            self.ros_node.reset(
+                "all"
+            )
+
+
+def load_config() -> dict:
+    share_directory = Path(
+        get_package_share_directory(
+            "agv_fleet_manager"
+        )
+    )
+
+    config_path = (
+        share_directory
+        / "config"
+        / "fleet_config.json"
+    )
+
+    return json.loads(
+        config_path.read_text(
+            encoding="utf-8"
+        )
+    )
+
+
+def main(args=None) -> None:
+    rclpy.init(args=args)
+
+    ros_node = FleetHMINode()
+
+    app = QApplication(
+        sys.argv
+    )
+
+    app.setApplicationName(
+        "Industrial AGV Fleet Control"
+    )
+
+    window = FleetHMI(
+        ros_node,
+        load_config(),
+    )
+
+    window.showMaximized()
+
+    exit_code = app.exec_()
+
+    ros_node.destroy_node()
+    rclpy.shutdown()
+
+    sys.exit(
+        exit_code
+    )
+
+
+if __name__ == "__main__":
+    main()
