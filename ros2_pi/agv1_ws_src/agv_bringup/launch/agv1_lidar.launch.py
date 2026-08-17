@@ -3,24 +3,31 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
+
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import (
+    ParameterValue,
+)
 
 
 def generate_launch_description():
-    serial_port = LaunchConfiguration("serial_port")
-    serial_baudrate = LaunchConfiguration("serial_baudrate")
+    serial_port = LaunchConfiguration(
+        "serial_port"
+    )
+
+    serial_baudrate = LaunchConfiguration(
+        "serial_baudrate"
+    )
 
     return LaunchDescription(
         [
             DeclareLaunchArgument(
                 "serial_port",
                 default_value="/dev/agv1_lidar",
-                description="AGV1 RPLIDAR serial port",
             ),
             DeclareLaunchArgument(
                 "serial_baudrate",
                 default_value="115200",
-                description="RPLIDAR A1 serial baud rate",
             ),
             Node(
                 package="rplidar_ros",
@@ -33,14 +40,20 @@ def generate_launch_description():
                 parameters=[
                     {
                         "serial_port": serial_port,
-                        "serial_baudrate": serial_baudrate,
+                        "serial_baudrate": ParameterValue(
+                            serial_baudrate,
+                            value_type=int,
+                        ),
                         "frame_id": "agv1_laser",
                         "inverted": False,
                         "angle_compensate": True,
                     }
                 ],
                 remappings=[
-                    ("/scan", "/agv_1/scan"),
+                    (
+                        "/scan",
+                        "/agv_1/scan",
+                    ),
                 ],
             ),
         ]

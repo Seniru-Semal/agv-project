@@ -11,10 +11,14 @@
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
 
-  <exec_depend>agv_arduino_bridge</exec_depend>
-  <exec_depend>agv_safety</exec_depend>
-  <exec_depend>agv_imu</exec_depend>
-  <exec_depend>agv_turn_manager</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>rplidar_ros</exec_depend>
+  <exec_depend>agv_rfid</exec_depend>
+  <exec_depend>agv_feature_classifier</exec_depend>
+  <exec_depend>agv_feature_action</exec_depend>
+  <exec_depend>agv_mission_manager</exec_depend>
+  <exec_depend>agv_obstacle_guard</exec_depend>
+  <exec_depend>agv_fleet_gate</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
