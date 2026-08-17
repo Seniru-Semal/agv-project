@@ -1,0 +1,1159 @@
+#!/usr/bin/env python3
+
+import json
+import math
+import os
+import time
+from collections import deque
+from typing import Any, Dict, List, Optional, Tuple
+
+import rclpy
+from rclpy.node import Node
+
+from std_msgs.msg import String, Bool, Int32, Float32
+
+
+VALID_JUNCTION_COMMANDS = {"straight", "left", "right", "uturn"}
+
+
+class MissionManagerNode(Node):
+    def __init__(self):
+        super().__init__("mission_manager_node")
+
+        self.declare_parameter(
+            "graph_file",
+            "/home/seniru/agv_ws/src/agv_mission_manager/config/track_graph.json",
+        )
+        self.declare_parameter("ticks_per_mm", 27.25)
+        self.declare_parameter("reset_feature_action_on_start", True)
+        self.declare_parameter("start_line_follow_on_start", True)
+        self.declare_parameter("auto_stop_on_cancel", True)
+        self.declare_parameter("geometry_straight_dot_threshold", 0.70)
+        self.declare_parameter("geometry_uturn_dot_threshold", -0.70)
+
+        self.graph_file = str(self.get_parameter("graph_file").value).strip()
+        self.ticks_per_mm = float(self.get_parameter("ticks_per_mm").value)
+
+        self.reset_feature_action_on_start = bool(
+            self.get_parameter("reset_feature_action_on_start").value
+        )
+        self.start_line_follow_on_start = bool(
+            self.get_parameter("start_line_follow_on_start").value
+        )
+        self.auto_stop_on_cancel = bool(
+            self.get_parameter("auto_stop_on_cancel").value
+        )
+
+        self.geometry_straight_dot_threshold = float(
+            self.get_parameter("geometry_straight_dot_threshold").value
+        )
+        self.geometry_uturn_dot_threshold = float(
+            self.get_parameter("geometry_uturn_dot_threshold").value
+        )
+
+        self.nodes: Dict[str, Dict[str, Any]] = {}
+        self.connections: List[Tuple[str, str]] = []
+        self.adjacency: Dict[str, List[str]] = {}
+        self.command_overrides: Dict[Tuple[str, str, str], str] = {}
+
+        self.default_current_node = "home"
+
+        self.dead_end_turn_deg = 180.0
+        self.station_exit_raw_drive_mm = 200.0
+        self.station_exit_raw_drive_ticks = self.station_exit_raw_drive_mm * self.ticks_per_mm
+        self.station_exit_raw_left_pwm = 120
+        self.station_exit_raw_right_pwm = 120
+        self.station_exit_after_turn_delay_sec = 0.5
+
+        self.load_graph()
+
+        self.active = False
+        self.state = "IDLE"
+
+        self.current_node = self.default_current_node
+        self.destination_node = ""
+
+        self.path_nodes: List[str] = []
+        self.path_index = 0
+
+        self.last_feature_action_event = "NONE"
+        self.mission_start_time = 0.0
+
+        # Station-exit state.
+        self.waiting_for_station_exit_turn_done = False
+        self.station_exit_turn_done_time = 0.0
+        self.station_exit_raw_active = False
+        self.station_exit_start_left_ticks: Optional[int] = None
+        self.station_exit_start_right_ticks: Optional[int] = None
+
+        # Encoder state from Arduino status.
+        self.latest_left_ticks: Optional[int] = None
+        self.latest_right_ticks: Optional[int] = None
+
+        # Publishers
+        self.junction_cmd_pub = self.create_publisher(
+            String, "/agv_1/junction_cmd", 10
+        )
+        self.start_pub = self.create_publisher(
+            Bool, "/agv_1/cmd/start", 10
+        )
+        self.stop_pub = self.create_publisher(
+            Bool, "/agv_1/cmd/stop", 10
+        )
+        self.turn_angle_pub = self.create_publisher(
+            Float32, "/agv_1/cmd/turn_angle_deg", 10
+        )
+        self.raw_cmd_pub = self.create_publisher(
+            String, "/agv_1/cmd/raw", 10
+        )
+        self.feature_action_reset_pub = self.create_publisher(
+            Bool, "/agv_1/feature_action/cmd/reset", 10
+        )
+        self.clear_junction_pub = self.create_publisher(
+            Bool, "/agv_1/feature/cmd/clear_junction", 10
+        )
+        self.ignore_station_until_junction_pub = self.create_publisher(
+            Bool,
+            "/agv_1/feature_action/cmd/ignore_station_until_junction",
+            10,
+        )
+
+        self.state_pub = self.create_publisher(
+            String, "/agv_1/mission/state", 10
+        )
+        self.event_pub = self.create_publisher(
+            String, "/agv_1/mission/event", 10
+        )
+        self.active_pub = self.create_publisher(
+            Bool, "/agv_1/mission/active", 10
+        )
+        self.current_node_pub = self.create_publisher(
+            String, "/agv_1/mission/current_node", 10
+        )
+        self.destination_pub = self.create_publisher(
+            String, "/agv_1/mission/destination", 10
+        )
+        self.route_index_pub = self.create_publisher(
+            Int32, "/agv_1/mission/route_index", 10
+        )
+        self.route_plan_pub = self.create_publisher(
+            String, "/agv_1/mission/route_plan", 10
+        )
+
+        # Subscribers
+        self.create_subscription(
+            String, "/agv_1/status_raw", self.status_raw_callback, 10
+        )
+        self.create_subscription(
+            String, "/agv_1/mission/start", self.start_mission_callback, 10
+        )
+        self.create_subscription(
+            String, "/agv_1/mission/plan", self.plan_only_callback, 10
+        )
+        self.create_subscription(
+            Bool, "/agv_1/mission/cancel", self.cancel_mission_callback, 10
+        )
+        self.create_subscription(
+            String, "/agv_1/mission/set_current_node", self.set_current_node_callback, 10
+        )
+        self.create_subscription(
+            Bool, "/agv_1/mission/reload_graph", self.reload_graph_callback, 10
+        )
+        self.create_subscription(
+            String,
+            "/agv_1/feature_action/event",
+            self.feature_action_event_callback,
+            10,
+        )
+        self.create_subscription(
+            Bool, "/agv_1/turn/done", self.turn_done_callback, 10
+        )
+
+        self.timer = self.create_timer(0.05, self.timer_callback)
+
+        self.get_logger().info("Coordinate graph mission manager started")
+        self.get_logger().info(f"Graph file: {self.graph_file}")
+        self.get_logger().info(f"Current node: {self.current_node}")
+        self.get_logger().info(f"Available nodes: {list(self.nodes.keys())}")
+        self.get_logger().info(
+            f"Station exit: turn={self.dead_end_turn_deg:.1f} deg, "
+            f"raw_drive={self.station_exit_raw_drive_mm:.1f} mm "
+            f"({self.station_exit_raw_drive_ticks:.1f} ticks), "
+            f"pwm=({self.station_exit_raw_left_pwm},{self.station_exit_raw_right_pwm})"
+        )
+
+    # ==================================================
+    # Graph loading
+    # ==================================================
+
+    def load_graph(self):
+        graph_file = os.path.expanduser(self.graph_file)
+
+        if not os.path.exists(graph_file):
+            self.get_logger().warn(f"Graph file not found: {graph_file}")
+            self.load_fallback_graph()
+            return
+
+        try:
+            with open(graph_file, "r", encoding="utf-8") as f:
+                graph = json.load(f)
+        except Exception as exc:
+            self.get_logger().warn(f"Failed to read graph file: {exc}")
+            self.load_fallback_graph()
+            return
+
+        self.default_current_node = str(
+            graph.get("default_current_node", "home")
+        ).strip().lower()
+
+        station_exit = graph.get("station_exit", {})
+        if isinstance(station_exit, dict):
+            self.dead_end_turn_deg = float(station_exit.get("dead_end_turn_deg", 180.0))
+            self.station_exit_raw_drive_mm = float(station_exit.get("raw_drive_mm", 200.0))
+            self.station_exit_raw_left_pwm = int(station_exit.get("raw_left_pwm", 120))
+            self.station_exit_raw_right_pwm = int(station_exit.get("raw_right_pwm", 120))
+            self.station_exit_after_turn_delay_sec = float(
+                station_exit.get("after_turn_delay_sec", 0.5)
+            )
+        else:
+            self.dead_end_turn_deg = 180.0
+            self.station_exit_raw_drive_mm = 200.0
+            self.station_exit_raw_left_pwm = 120
+            self.station_exit_raw_right_pwm = 120
+            self.station_exit_after_turn_delay_sec = 0.5
+
+        self.station_exit_raw_drive_ticks = (
+            self.station_exit_raw_drive_mm * self.ticks_per_mm
+        )
+
+        raw_nodes = graph.get("nodes", {})
+        raw_connections = graph.get("connections", [])
+        raw_overrides = graph.get("command_overrides", [])
+
+        nodes: Dict[str, Dict[str, Any]] = {}
+
+        if not isinstance(raw_nodes, dict):
+            self.get_logger().warn("Invalid graph nodes. Using fallback graph.")
+            self.load_fallback_graph()
+            return
+
+        for node_name, node_info in raw_nodes.items():
+            clean_name = str(node_name).strip().lower()
+
+            if not clean_name:
+                continue
+
+            if not isinstance(node_info, dict):
+                node_info = {}
+
+            node_type = str(node_info.get("type", "unknown")).strip().lower()
+            dead_end = bool(node_info.get("dead_end", False))
+            pos = node_info.get("pos", None)
+
+            clean_pos = None
+            if isinstance(pos, list) and len(pos) == 2:
+                try:
+                    clean_pos = [float(pos[0]), float(pos[1])]
+                except Exception:
+                    clean_pos = None
+
+            nodes[clean_name] = {
+                "type": node_type,
+                "dead_end": dead_end,
+                "pos": clean_pos,
+            }
+
+        connections: List[Tuple[str, str]] = []
+
+        if not isinstance(raw_connections, list):
+            self.get_logger().warn("Invalid graph connections. Using fallback graph.")
+            self.load_fallback_graph()
+            return
+
+        for item in raw_connections:
+            if not isinstance(item, list) or len(item) != 2:
+                self.get_logger().warn(f"Ignored invalid connection: {item}")
+                continue
+
+            a = str(item[0]).strip().lower()
+            b = str(item[1]).strip().lower()
+
+            if a not in nodes:
+                self.get_logger().warn(f"Ignored connection from unknown node: {a}")
+                continue
+
+            if b not in nodes:
+                self.get_logger().warn(f"Ignored connection to unknown node: {b}")
+                continue
+
+            connections.append((a, b))
+
+        command_overrides: Dict[Tuple[str, str, str], str] = {}
+
+        if isinstance(raw_overrides, list):
+            for override in raw_overrides:
+                if not isinstance(override, dict):
+                    continue
+
+                previous = str(override.get("previous", "")).strip().lower()
+                at = str(override.get("at", "")).strip().lower()
+                next_node = str(override.get("next", "")).strip().lower()
+                command = self.normalize_command(override.get("command", ""))
+
+                if previous not in nodes or at not in nodes or next_node not in nodes:
+                    self.get_logger().warn(f"Ignored override with unknown node: {override}")
+                    continue
+
+                if command not in VALID_JUNCTION_COMMANDS:
+                    self.get_logger().warn(f"Ignored invalid command override: {override}")
+                    continue
+
+                command_overrides[(previous, at, next_node)] = command
+
+        if not nodes or not connections:
+            self.get_logger().warn("Graph had no valid nodes/connections. Using fallback.")
+            self.load_fallback_graph()
+            return
+
+        self.nodes = nodes
+        self.connections = connections
+        self.command_overrides = command_overrides
+        self.build_adjacency()
+
+        if self.default_current_node not in self.nodes:
+            self.default_current_node = list(self.nodes.keys())[0]
+
+    def load_fallback_graph(self):
+        self.default_current_node = "home"
+        self.dead_end_turn_deg = 180.0
+        self.station_exit_raw_drive_mm = 200.0
+        self.station_exit_raw_drive_ticks = self.station_exit_raw_drive_mm * self.ticks_per_mm
+        self.station_exit_raw_left_pwm = 120
+        self.station_exit_raw_right_pwm = 120
+        self.station_exit_after_turn_delay_sec = 0.5
+
+        self.nodes = {
+            "home": {"type": "station", "dead_end": False, "pos": [0.0, 0.0]},
+            "j1": {"type": "junction", "dead_end": False, "pos": [1.0, 0.0]},
+            "station_a": {"type": "station", "dead_end": True, "pos": [2.0, 0.0]},
+        }
+
+        self.connections = [
+            ("home", "j1"),
+            ("j1", "station_a"),
+        ]
+
+        self.command_overrides = {
+            ("home", "j1", "station_a"): "straight",
+        }
+
+        self.build_adjacency()
+
+    def build_adjacency(self):
+        self.adjacency = {}
+
+        for node_name in self.nodes.keys():
+            self.adjacency[node_name] = []
+
+        for a, b in self.connections:
+            self.adjacency.setdefault(a, []).append(b)
+            self.adjacency.setdefault(b, []).append(a)
+
+    def normalize_command(self, command: Any) -> str:
+        text = str(command).strip().lower()
+
+        if text in ["u-turn", "u_turn"]:
+            return "uturn"
+
+        return text
+
+    # ==================================================
+    # Arduino status / encoder handling
+    # ==================================================
+
+    def status_raw_callback(self, msg: String):
+        data = self.parse_status_line(msg.data)
+
+        if data is None:
+            return
+
+        if "L" in data:
+            self.latest_left_ticks = self.safe_int(data["L"])
+
+        if "R" in data:
+            self.latest_right_ticks = self.safe_int(data["R"])
+
+        self.update_station_exit_motion()
+
+    def parse_status_line(self, line: str) -> Optional[Dict[str, str]]:
+        if not line.startswith("A:"):
+            return None
+
+        payload = line[2:]
+        fields = payload.split(";")
+
+        data: Dict[str, str] = {}
+
+        for field in fields:
+            if "=" not in field:
+                continue
+
+            key, value = field.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+
+            if key:
+                data[key] = value
+
+        return data
+
+    def have_ticks(self) -> bool:
+        return self.latest_left_ticks is not None and self.latest_right_ticks is not None
+
+    def average_delta_ticks(
+        self,
+        start_left: Optional[int],
+        start_right: Optional[int],
+    ) -> float:
+        if (
+            start_left is None
+            or start_right is None
+            or self.latest_left_ticks is None
+            or self.latest_right_ticks is None
+        ):
+            return 0.0
+
+        left_delta = abs(self.latest_left_ticks - start_left)
+        right_delta = abs(self.latest_right_ticks - start_right)
+
+        return 0.5 * (left_delta + right_delta)
+
+    # ==================================================
+    # Planning
+    # ==================================================
+
+    def find_path_nodes(self, start_node: str, destination_node: str) -> Optional[List[str]]:
+        start_node = start_node.strip().lower()
+        destination_node = destination_node.strip().lower()
+
+        if start_node not in self.nodes:
+            return None
+
+        if destination_node not in self.nodes:
+            return None
+
+        if start_node == destination_node:
+            return [start_node]
+
+        queue = deque()
+        queue.append((start_node, [start_node]))
+
+        visited = set()
+        visited.add(start_node)
+
+        while queue:
+            node, path = queue.popleft()
+
+            for next_node in self.adjacency.get(node, []):
+                if next_node in visited:
+                    continue
+
+                # Do not route through station nodes as intermediate nodes.
+                # Stations are valid only as start or destination.
+                if not self.can_transit_through(next_node, start_node, destination_node):
+                    continue
+
+                new_path = path + [next_node]
+
+                if next_node == destination_node:
+                    return new_path
+
+                visited.add(next_node)
+                queue.append((next_node, new_path))
+
+        return None
+
+    def can_transit_through(
+        self,
+        node_name: str,
+        start_node: str,
+        destination_node: str,
+    ) -> bool:
+        if node_name == start_node:
+            return True
+
+        if node_name == destination_node:
+            return True
+
+        return self.is_junction(node_name)
+
+    def build_route_actions(self, path_nodes: List[str]) -> List[Dict[str, Any]]:
+        actions: List[Dict[str, Any]] = []
+
+        if len(path_nodes) <= 1:
+            return actions
+
+        start_node = path_nodes[0]
+
+        if self.is_dead_end_station(start_node):
+            actions.append(
+                {
+                    "at": start_node,
+                    "action": "station_exit_uturn",
+                    "angle_deg": self.dead_end_turn_deg,
+                }
+            )
+            actions.append(
+                {
+                    "at": start_node,
+                    "action": "station_exit_raw_drive",
+                    "distance_mm": self.station_exit_raw_drive_mm,
+                }
+            )
+            actions.append(
+                {
+                    "at": start_node,
+                    "action": "start_line_follow",
+                }
+            )
+
+        for i in range(1, len(path_nodes) - 1):
+            previous = path_nodes[i - 1]
+            at = path_nodes[i]
+            next_node = path_nodes[i + 1]
+
+            if not self.is_junction(at):
+                continue
+
+            command = self.compute_junction_command(previous, at, next_node)
+
+            actions.append(
+                {
+                    "at": at,
+                    "from": previous,
+                    "to": next_node,
+                    "action": "junction_command",
+                    "command": command,
+                }
+            )
+
+        return actions
+
+    def compute_junction_command(
+        self,
+        previous: str,
+        at: str,
+        next_node: str,
+    ) -> Optional[str]:
+        previous = previous.strip().lower()
+        at = at.strip().lower()
+        next_node = next_node.strip().lower()
+
+        override_key = (previous, at, next_node)
+
+        if override_key in self.command_overrides:
+            return self.command_overrides[override_key]
+
+        p_prev = self.get_pos(previous)
+        p_at = self.get_pos(at)
+        p_next = self.get_pos(next_node)
+
+        if p_prev is None or p_at is None or p_next is None:
+            return None
+
+        vin = (p_at[0] - p_prev[0], p_at[1] - p_prev[1])
+        vout = (p_next[0] - p_at[0], p_next[1] - p_at[1])
+
+        return self.vector_turn_command(vin, vout)
+
+    def vector_turn_command(
+        self,
+        vin: Tuple[float, float],
+        vout: Tuple[float, float],
+    ) -> Optional[str]:
+        in_len = math.hypot(vin[0], vin[1])
+        out_len = math.hypot(vout[0], vout[1])
+
+        if in_len <= 1e-6 or out_len <= 1e-6:
+            return None
+
+        ax = vin[0] / in_len
+        ay = vin[1] / in_len
+        bx = vout[0] / out_len
+        by = vout[1] / out_len
+
+        dot = ax * bx + ay * by
+        cross = ax * by - ay * bx
+
+        if dot >= self.geometry_straight_dot_threshold:
+            return "straight"
+
+        if dot <= self.geometry_uturn_dot_threshold:
+            return "uturn"
+
+        if cross > 0.0:
+            return "left"
+
+        return "right"
+
+    def get_pos(self, node_name: str) -> Optional[List[float]]:
+        node = self.nodes.get(node_name)
+
+        if node is None:
+            return None
+
+        pos = node.get("pos", None)
+
+        if not isinstance(pos, list) or len(pos) != 2:
+            return None
+
+        return pos
+
+    # ==================================================
+    # Mission commands
+    # ==================================================
+
+    def plan_only_callback(self, msg: String):
+        destination = msg.data.strip().lower()
+
+        if not destination:
+            self.publish_event("PLAN_REJECTED_EMPTY_DESTINATION")
+            return
+
+        path_nodes = self.find_path_nodes(self.current_node, destination)
+
+        if path_nodes is None:
+            self.publish_event(f"PLAN_REJECTED_NO_PATH_TO_{destination}")
+            self.get_logger().warn(f"No path from {self.current_node} to {destination}")
+            return
+
+        actions = self.build_route_actions(path_nodes)
+        self.publish_event(f"PLAN_READY_TO_{destination}")
+        self.publish_route_plan(path_nodes, actions)
+
+    def start_mission_callback(self, msg: String):
+        destination = msg.data.strip().lower()
+
+        if not destination:
+            self.publish_event("MISSION_START_REJECTED_EMPTY_DESTINATION")
+            return
+
+        if self.active:
+            self.publish_event("MISSION_START_REJECTED_ALREADY_ACTIVE")
+            self.get_logger().warn("Mission already active. Cancel first.")
+            return
+
+        if destination not in self.nodes:
+            self.publish_event(f"MISSION_START_REJECTED_UNKNOWN_DESTINATION_{destination}")
+            self.get_logger().warn(
+                f"Unknown destination '{destination}'. Known nodes: {list(self.nodes.keys())}"
+            )
+            return
+
+        path_nodes = self.find_path_nodes(self.current_node, destination)
+
+        if path_nodes is None:
+            self.publish_event(f"MISSION_START_REJECTED_NO_PATH_TO_{destination}")
+            self.get_logger().warn(f"No path from {self.current_node} to {destination}")
+            return
+
+        if len(path_nodes) == 1:
+            self.destination_node = destination
+            self.state = "COMPLETED"
+            self.publish_event(f"MISSION_ALREADY_AT_{destination}")
+            self.publish_state()
+            return
+
+        self.active = True
+        self.state = "STARTING"
+        self.destination_node = destination
+        self.path_nodes = path_nodes
+        self.path_index = 0
+        self.mission_start_time = time.time()
+
+        self.waiting_for_station_exit_turn_done = False
+        self.station_exit_turn_done_time = 0.0
+        self.station_exit_raw_active = False
+        self.station_exit_start_left_ticks = None
+        self.station_exit_start_right_ticks = None
+
+        actions = self.build_route_actions(self.path_nodes)
+
+        self.publish_event(f"MISSION_STARTED_TO_{destination}")
+        self.publish_route_plan(self.path_nodes, actions)
+        self.publish_state()
+
+        self.get_logger().info(
+            f"Mission started: {self.current_node} -> {destination}"
+        )
+        self.get_logger().info(f"Path nodes: {self.path_nodes}")
+        self.get_logger().info(f"Actions: {actions}")
+
+        if self.reset_feature_action_on_start:
+            self.publish_feature_action_reset()
+            time.sleep(0.05)
+
+        if self.is_dead_end_station(self.current_node):
+            self.publish_ignore_station_until_junction(True)
+            time.sleep(0.05)
+            self.start_dead_end_station_exit()
+        else:
+            self.publish_ignore_station_until_junction(False)
+            self.start_line_follow_to_next_node()
+
+    def start_dead_end_station_exit(self):
+        self.state = "EXITING_DEAD_END_STATION_TURN"
+        self.waiting_for_station_exit_turn_done = True
+
+        self.publish_event(f"MISSION_STATION_EXIT_TURN_{self.current_node}")
+        self.publish_state()
+
+        msg = Float32()
+        msg.data = float(self.dead_end_turn_deg)
+        self.turn_angle_pub.publish(msg)
+
+        self.get_logger().info(
+            f"Starting dead-end station exit turn at {self.current_node}: "
+            f"{self.dead_end_turn_deg:.1f} deg"
+        )
+
+    def turn_done_callback(self, msg: Bool):
+        if not msg.data:
+            return
+
+        if not self.active:
+            return
+
+        if not self.waiting_for_station_exit_turn_done:
+            return
+
+        self.waiting_for_station_exit_turn_done = False
+        self.station_exit_turn_done_time = time.time()
+
+        self.state = "WAITING_AFTER_STATION_EXIT_TURN"
+        self.publish_event("MISSION_STATION_EXIT_TURN_DONE")
+        self.publish_state()
+
+        self.get_logger().info(
+            "Station exit turn done. Waiting before RAW_DRIVE station exit."
+        )
+
+    def maybe_start_station_exit_raw_drive(self):
+        if self.state != "WAITING_AFTER_STATION_EXIT_TURN":
+            return
+
+        elapsed = time.time() - self.station_exit_turn_done_time
+
+        if elapsed < self.station_exit_after_turn_delay_sec:
+            return
+
+        if not self.have_ticks():
+            self.get_logger().warn("Cannot start station exit RAW_DRIVE: no encoder ticks yet")
+            return
+
+        self.publish_clear_junction_ignore()
+        self.publish_ignore_station_until_junction(True)
+
+        self.station_exit_start_left_ticks = self.latest_left_ticks
+        self.station_exit_start_right_ticks = self.latest_right_ticks
+        self.station_exit_raw_active = True
+
+        self.state = "EXITING_STATION_RAW_DRIVE"
+        self.publish_event(
+            f"MISSION_STATION_EXIT_RAW_DRIVE_{self.station_exit_raw_drive_mm:.0f}MM"
+        )
+        self.publish_state()
+
+        self.send_raw_drive(
+            self.station_exit_raw_left_pwm,
+            self.station_exit_raw_right_pwm,
+        )
+
+        self.get_logger().info(
+            f"Station exit RAW_DRIVE started for "
+            f"{self.station_exit_raw_drive_mm:.1f} mm "
+            f"({self.station_exit_raw_drive_ticks:.1f} ticks)."
+        )
+
+    def update_station_exit_motion(self):
+        if not self.active:
+            return
+
+        if not self.station_exit_raw_active:
+            return
+
+        distance = self.average_delta_ticks(
+            self.station_exit_start_left_ticks,
+            self.station_exit_start_right_ticks,
+        )
+
+        if distance < self.station_exit_raw_drive_ticks:
+            return
+
+        self.station_exit_raw_active = False
+        self.station_exit_start_left_ticks = None
+        self.station_exit_start_right_ticks = None
+
+        self.publish_event("MISSION_STATION_EXIT_RAW_DRIVE_DONE")
+
+        self.send_raw_start()
+
+        self.state = "RUNNING_TO_NEXT_NODE"
+        self.publish_event("MISSION_LINE_FOLLOW_STARTED")
+        self.publish_state()
+
+        self.get_logger().info(
+            f"Station exit RAW_DRIVE complete. avg_delta={distance:.1f} ticks. "
+            "Line following started."
+        )
+
+    def start_line_follow_to_next_node(self):
+        self.state = "RUNNING_TO_NEXT_NODE"
+        self.publish_event("MISSION_LINE_FOLLOW_STARTED")
+        self.publish_state()
+
+        if self.start_line_follow_on_start:
+            self.publish_start()
+
+    def cancel_mission_callback(self, msg: Bool):
+        if not msg.data:
+            return
+
+        self.cancel_mission("MISSION_CANCELLED_BY_USER")
+
+    def set_current_node_callback(self, msg: String):
+        node_name = msg.data.strip().lower()
+
+        if not node_name:
+            return
+
+        if node_name not in self.nodes:
+            self.publish_event(f"SET_CURRENT_NODE_REJECTED_UNKNOWN_{node_name}")
+            self.get_logger().warn(f"Unknown current node: {node_name}")
+            return
+
+        if self.active:
+            self.publish_event("SET_CURRENT_NODE_REJECTED_MISSION_ACTIVE")
+            self.get_logger().warn("Cannot set current node while mission is active")
+            return
+
+        self.current_node = node_name
+        self.destination_node = ""
+        self.path_nodes = []
+        self.path_index = 0
+        self.state = "IDLE"
+
+        self.publish_ignore_station_until_junction(False)
+        self.publish_event(f"CURRENT_NODE_SET_{node_name}")
+        self.publish_state()
+
+        self.get_logger().info(f"Current node set to {node_name}")
+
+    def reload_graph_callback(self, msg: Bool):
+        if not msg.data:
+            return
+
+        if self.active:
+            self.publish_event("GRAPH_RELOAD_REJECTED_MISSION_ACTIVE")
+            self.get_logger().warn("Cannot reload graph during active mission")
+            return
+
+        self.load_graph()
+
+        if self.current_node not in self.nodes:
+            self.current_node = self.default_current_node
+
+        self.publish_ignore_station_until_junction(False)
+        self.publish_event("GRAPH_RELOADED")
+        self.publish_state()
+
+        self.get_logger().info("Graph reloaded")
+
+    def cancel_mission(self, reason: str):
+        self.active = False
+        self.state = "CANCELLED"
+
+        self.waiting_for_station_exit_turn_done = False
+        self.station_exit_turn_done_time = 0.0
+        self.station_exit_raw_active = False
+        self.station_exit_start_left_ticks = None
+        self.station_exit_start_right_ticks = None
+
+        self.publish_ignore_station_until_junction(False)
+        self.publish_event(reason)
+        self.publish_state()
+
+        if self.auto_stop_on_cancel:
+            self.publish_stop()
+
+        self.get_logger().warn(f"Mission cancelled: {reason}")
+
+    # ==================================================
+    # Feature-action event handling
+    # ==================================================
+
+    def feature_action_event_callback(self, msg: String):
+        event = msg.data.strip()
+
+        if not event:
+            return
+
+        self.last_feature_action_event = event
+
+        if not self.active:
+            return
+
+        if event == "JUNCTION_REACHED":
+            self.handle_junction_reached()
+            return
+
+        if event == "JUNCTION_CLEARED":
+            self.state = "RUNNING_TO_NEXT_NODE"
+            self.publish_event("MISSION_JUNCTION_CLEARED")
+            self.publish_state()
+            return
+
+        if event == "LINE_FOLLOW_RESUMED":
+            self.state = "RUNNING_TO_NEXT_NODE"
+            self.publish_state()
+            return
+
+        if event == "STATION_REACHED":
+            self.handle_station_reached()
+            return
+
+        if event.startswith("FEATURE_ACTION_TIMEOUT"):
+            self.cancel_mission(f"MISSION_CANCELLED_{event}")
+            return
+
+    def handle_junction_reached(self):
+        if self.path_index + 1 >= len(self.path_nodes):
+            self.cancel_mission("MISSION_CANCELLED_UNEXPECTED_JUNCTION")
+            return
+
+        previous_node = self.path_nodes[self.path_index]
+        arrived_node = self.path_nodes[self.path_index + 1]
+
+        self.publish_ignore_station_until_junction(False)
+
+        self.path_index += 1
+        self.current_node = arrived_node
+
+        self.publish_event(f"MISSION_ARRIVED_AT_{arrived_node}")
+        self.publish_state()
+
+        if arrived_node == self.destination_node:
+            self.complete_mission()
+            return
+
+        if not self.is_junction(arrived_node):
+            self.cancel_mission(f"MISSION_CANCELLED_EXPECTED_JUNCTION_GOT_{arrived_node}")
+            return
+
+        if self.path_index + 1 >= len(self.path_nodes):
+            self.cancel_mission("MISSION_CANCELLED_ROUTE_EXHAUSTED_AT_JUNCTION")
+            return
+
+        next_node = self.path_nodes[self.path_index + 1]
+
+        command = self.compute_junction_command(previous_node, arrived_node, next_node)
+
+        if command is None:
+            self.cancel_mission(
+                f"MISSION_CANCELLED_NO_COMMAND_{previous_node}_{arrived_node}_{next_node}"
+            )
+            return
+
+        self.publish_junction_command(command)
+
+        self.state = f"COMMAND_SENT_{command.upper()}"
+        self.publish_event(
+            f"MISSION_SENT_JUNCTION_CMD_{command}_AT_{arrived_node}_TO_{next_node}"
+        )
+        self.publish_state()
+
+        self.get_logger().info(
+            f"At {arrived_node} from {previous_node}: "
+            f"command={command}, next={next_node}"
+        )
+
+    def handle_station_reached(self):
+        if self.path_index + 1 >= len(self.path_nodes):
+            self.cancel_mission("MISSION_CANCELLED_UNEXPECTED_STATION")
+            return
+
+        expected_node = self.path_nodes[self.path_index + 1]
+
+        if self.is_junction(expected_node):
+            self.publish_event(f"MISSION_IGNORED_FALSE_STATION_BEFORE_{expected_node}")
+            self.get_logger().warn(
+                f"Ignored false STATION_REACHED while expecting junction {expected_node}"
+            )
+            return
+
+        previous_node = self.path_nodes[self.path_index]
+        arrived_node = self.path_nodes[self.path_index + 1]
+
+        self.path_index += 1
+        self.current_node = arrived_node
+
+        self.publish_ignore_station_until_junction(False)
+        self.publish_event(f"MISSION_ARRIVED_AT_{arrived_node}")
+        self.publish_state()
+
+        if arrived_node == self.destination_node:
+            self.complete_mission()
+            return
+
+        self.cancel_mission(
+            f"MISSION_CANCELLED_REACHED_{arrived_node}_INSTEAD_OF_{self.destination_node}"
+        )
+
+    def complete_mission(self):
+        elapsed = time.time() - self.mission_start_time
+        completed_destination = self.destination_node
+
+        self.active = False
+        self.state = "COMPLETED"
+
+        self.waiting_for_station_exit_turn_done = False
+        self.station_exit_turn_done_time = 0.0
+        self.station_exit_raw_active = False
+
+        self.publish_ignore_station_until_junction(False)
+        self.publish_event(f"MISSION_COMPLETED_{completed_destination}")
+        self.publish_state()
+
+        self.get_logger().info(
+            f"Mission completed at {completed_destination}, elapsed={elapsed:.1f}s"
+        )
+
+    # ==================================================
+    # Node helpers
+    # ==================================================
+
+    def is_junction(self, node_name: str) -> bool:
+        node = self.nodes.get(node_name, {})
+        return str(node.get("type", "")).strip().lower() == "junction"
+
+    def is_dead_end_station(self, node_name: str) -> bool:
+        node = self.nodes.get(node_name, {})
+        return bool(node.get("dead_end", False))
+
+    # ==================================================
+    # Publishers / robot commands
+    # ==================================================
+
+    def publish_junction_command(self, command: str):
+        msg = String()
+        msg.data = command
+        self.junction_cmd_pub.publish(msg)
+
+    def publish_start(self):
+        msg = Bool()
+        msg.data = True
+        self.start_pub.publish(msg)
+
+    def publish_stop(self):
+        msg = Bool()
+        msg.data = True
+        self.stop_pub.publish(msg)
+
+    def publish_feature_action_reset(self):
+        msg = Bool()
+        msg.data = True
+        self.feature_action_reset_pub.publish(msg)
+
+    def publish_clear_junction_ignore(self):
+        msg = Bool()
+        msg.data = True
+        self.clear_junction_pub.publish(msg)
+
+    def publish_ignore_station_until_junction(self, enabled: bool):
+        msg = Bool()
+        msg.data = bool(enabled)
+        self.ignore_station_until_junction_pub.publish(msg)
+
+    def send_raw_command(self, command: str):
+        msg = String()
+        msg.data = command
+        self.raw_cmd_pub.publish(msg)
+
+    def send_raw_drive(self, left_pwm: int, right_pwm: int):
+        left_pwm = max(-255, min(255, int(left_pwm)))
+        right_pwm = max(-255, min(255, int(right_pwm)))
+        self.send_raw_command(f"C:RAW_DRIVE,{left_pwm},{right_pwm}")
+
+    def send_raw_start(self):
+        self.send_raw_command("C:START")
+
+    def publish_state(self):
+        state_msg = String()
+        state_msg.data = self.state
+        self.state_pub.publish(state_msg)
+
+        active_msg = Bool()
+        active_msg.data = self.active
+        self.active_pub.publish(active_msg)
+
+        current_msg = String()
+        current_msg.data = self.current_node
+        self.current_node_pub.publish(current_msg)
+
+        destination_msg = String()
+        destination_msg.data = self.destination_node
+        self.destination_pub.publish(destination_msg)
+
+        index_msg = Int32()
+        index_msg.data = int(self.path_index)
+        self.route_index_pub.publish(index_msg)
+
+    def publish_event(self, event: str):
+        msg = String()
+        msg.data = event
+        self.event_pub.publish(msg)
+
+    def publish_route_plan(self, path_nodes: List[str], actions: List[Dict[str, Any]]):
+        msg = String()
+        msg.data = json.dumps(
+            {
+                "from": path_nodes[0] if path_nodes else self.current_node,
+                "to": path_nodes[-1] if path_nodes else self.destination_node,
+                "path": path_nodes,
+                "actions": actions,
+            }
+        )
+        self.route_plan_pub.publish(msg)
+
+    def timer_callback(self):
+        self.maybe_start_station_exit_raw_drive()
+        self.publish_state()
+
+    # ==================================================
+    # Utility
+    # ==================================================
+
+    @staticmethod
+    def safe_int(value: str) -> int:
+        try:
+            return int(value)
+        except ValueError:
+            return 0
+
+
+def main(args=None):
+    rclpy.init(args=args)
+
+    node = MissionManagerNode()
+
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()

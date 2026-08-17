@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>agv_bringup</name>
+  <version>0.0.1</version>
+  <description>Bringup launch files for AGV robot</description>
+  <maintainer email="seniru@example.com">seniru</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
+  <exec_depend>agv_arduino_bridge</exec_depend>
+  <exec_depend>agv_safety</exec_depend>
+  <exec_depend>agv_imu</exec_depend>
+  <exec_depend>agv_turn_manager</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

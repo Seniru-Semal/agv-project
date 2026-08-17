@@ -1,0 +1,269 @@
+#!/usr/bin/env python3
+
+import time
+from typing import Dict, Optional
+
+import rclpy
+from rclpy.node import Node
+
+from std_msgs.msg import String, Bool
+
+
+class SafetyManagerNode(Node):
+    def __init__(self):
+        super().__init__("safety_manager_node")
+
+        self.declare_parameter("status_timeout_sec", 1.0)
+        self.declare_parameter("hard_timeout_sec", 3.0)
+        self.declare_parameter("auto_stop_on_stale", True)
+        self.declare_parameter("auto_estop_on_hard_timeout", False)
+        self.declare_parameter("auto_stop_on_fault", True)
+
+        self.status_timeout_sec = float(
+            self.get_parameter("status_timeout_sec").value
+        )
+        self.hard_timeout_sec = float(
+            self.get_parameter("hard_timeout_sec").value
+        )
+        self.auto_stop_on_stale = bool(
+            self.get_parameter("auto_stop_on_stale").value
+        )
+        self.auto_estop_on_hard_timeout = bool(
+            self.get_parameter("auto_estop_on_hard_timeout").value
+        )
+        self.auto_stop_on_fault = bool(
+            self.get_parameter("auto_stop_on_fault").value
+        )
+
+        self.last_status_time = 0.0
+
+        self.arduino_state = "UNKNOWN"
+        self.estop = False
+        self.fault_code = 0
+        self.bridge_connected = False
+
+        self.last_auto_command_time = 0.0
+        self.auto_command_cooldown_sec = 1.0
+
+        self.safe_states = {
+            "IDLE",
+            "FOLLOW",
+            "RECOVER_LEFT",
+            "RECOVER_RIGHT",
+            "PIVOT_LEFT",
+            "PIVOT_RIGHT",
+            "RAW_DRIVE",
+        }
+
+        self.create_subscription(
+            String,
+            "/agv_1/status_raw",
+            self.status_callback,
+            20,
+        )
+
+        self.create_subscription(
+            Bool,
+            "/agv_1/bridge_connected",
+            self.bridge_connected_callback,
+            10,
+        )
+
+        self.safety_state_pub = self.create_publisher(
+            String,
+            "/agv_1/safety/state",
+            10,
+        )
+
+        self.safety_ok_pub = self.create_publisher(
+            Bool,
+            "/agv_1/safety/ok",
+            10,
+        )
+
+        self.safety_message_pub = self.create_publisher(
+            String,
+            "/agv_1/safety/message",
+            10,
+        )
+
+        self.heartbeat_age_pub = self.create_publisher(
+            String,
+            "/agv_1/safety/heartbeat_age_ms",
+            10,
+        )
+
+        self.stop_pub = self.create_publisher(
+            Bool,
+            "/agv_1/cmd/stop",
+            10,
+        )
+
+        self.estop_pub = self.create_publisher(
+            Bool,
+            "/agv_1/cmd/estop",
+            10,
+        )
+
+        self.timer = self.create_timer(0.1, self.timer_callback)
+
+        self.get_logger().info("AGV safety manager started")
+        self.get_logger().info("RAW_DRIVE is included as a safe state")
+
+    def bridge_connected_callback(self, msg: Bool):
+        self.bridge_connected = bool(msg.data)
+
+    def status_callback(self, msg: String):
+        data = self.parse_status_line(msg.data)
+
+        if data is None:
+            return
+
+        self.last_status_time = time.time()
+
+        self.arduino_state = data.get("STATE", "UNKNOWN")
+        self.estop = self.safe_int(data.get("ESTOP", "0")) == 1
+        self.fault_code = self.safe_int(data.get("FAULT", "0"))
+
+    def parse_status_line(self, line: str) -> Optional[Dict[str, str]]:
+        line = line.strip()
+
+        if not line.startswith("A:"):
+            return None
+
+        payload = line[2:]
+        fields = payload.split(";")
+
+        data: Dict[str, str] = {}
+
+        for field in fields:
+            if "=" not in field:
+                continue
+
+            key, value = field.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+
+            if key:
+                data[key] = value
+
+        return data
+
+    def timer_callback(self):
+        now = time.time()
+
+        if self.last_status_time <= 0.0:
+            age = 999.0
+        else:
+            age = now - self.last_status_time
+
+        ok = True
+        state = "OK"
+        message = "Safety OK"
+
+        if not self.bridge_connected:
+            ok = False
+            state = "NO_BRIDGE"
+            message = "Arduino bridge not connected"
+
+        elif age > self.hard_timeout_sec:
+            ok = False
+            state = "HARD_TIMEOUT"
+            message = f"Arduino status hard timeout: {age:.2f} sec"
+
+            if self.auto_estop_on_hard_timeout:
+                self.send_estop_limited()
+
+        elif age > self.status_timeout_sec:
+            ok = False
+            state = "STALE"
+            message = f"Arduino status stale: {age:.2f} sec"
+
+            if self.auto_stop_on_stale:
+                self.send_stop_limited()
+
+        elif self.estop:
+            ok = False
+            state = "ESTOP"
+            message = "Arduino ESTOP active"
+
+        elif self.fault_code != 0:
+            ok = False
+            state = "FAULT"
+            message = f"Arduino fault code: {self.fault_code}"
+
+            if self.auto_stop_on_fault:
+                self.send_stop_limited()
+
+        elif self.arduino_state not in self.safe_states:
+            ok = False
+            state = "UNSAFE_STATE"
+            message = f"Arduino state not marked safe: {self.arduino_state}"
+
+        self.publish_outputs(ok, state, message, age)
+
+    def publish_outputs(self, ok: bool, state: str, message: str, age_sec: float):
+        state_msg = String()
+        state_msg.data = state
+        self.safety_state_pub.publish(state_msg)
+
+        ok_msg = Bool()
+        ok_msg.data = ok
+        self.safety_ok_pub.publish(ok_msg)
+
+        message_msg = String()
+        message_msg.data = message
+        self.safety_message_pub.publish(message_msg)
+
+        age_msg = String()
+        age_msg.data = str(int(age_sec * 1000.0))
+        self.heartbeat_age_pub.publish(age_msg)
+
+    def send_stop_limited(self):
+        now = time.time()
+
+        if now - self.last_auto_command_time < self.auto_command_cooldown_sec:
+            return
+
+        self.last_auto_command_time = now
+
+        msg = Bool()
+        msg.data = True
+        self.stop_pub.publish(msg)
+
+    def send_estop_limited(self):
+        now = time.time()
+
+        if now - self.last_auto_command_time < self.auto_command_cooldown_sec:
+            return
+
+        self.last_auto_command_time = now
+
+        msg = Bool()
+        msg.data = True
+        self.estop_pub.publish(msg)
+
+    @staticmethod
+    def safe_int(value: str) -> int:
+        try:
+            return int(value)
+        except Exception:
+            return 0
+
+
+def main(args=None):
+    rclpy.init(args=args)
+
+    node = SafetyManagerNode()
+
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()
