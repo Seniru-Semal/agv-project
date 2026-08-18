@@ -1,0 +1,13 @@
+{
+  "stores_node": "stores",
+  "workbenches": [
+    "bench_1",
+    "bench_2",
+    "bench_3"
+  ],
+  "home_nodes": {
+    "agv_1": "charger_1",
+    "agv_2": "charger_2"
+  },
+  "default_priority": 10
+}
