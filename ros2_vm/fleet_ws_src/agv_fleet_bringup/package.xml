@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>agv_fleet_bringup</name>
+  <version>0.1.0</version>
+  <description>VM-side launch package for the AGV fleet, delivery, and operator GUI system.</description>
+
+  <maintainer email="seniru@example.com">seniru</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <exec_depend>agv_delivery_manager</exec_depend>
+  <exec_depend>agv_fleet_manager</exec_depend>
+  <exec_depend>agv_operator_ui</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
