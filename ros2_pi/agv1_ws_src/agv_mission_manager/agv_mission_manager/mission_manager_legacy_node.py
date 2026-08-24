@@ -261,6 +261,7 @@ class MissionManagerNode(Node):
                 "type": node_type,
                 "dead_end": dead_end,
                 "pos": clean_pos,
+                "junction_group": str(node_info.get("junction_group", clean_name)).strip().lower(),
             }
 
         connections: List[Tuple[str, str]] = []
@@ -956,6 +957,19 @@ class MissionManagerNode(Node):
 
         next_node = self.path_nodes[self.path_index + 1]
 
+        if self.same_junction_group(previous_node, arrived_node):
+            self.state = "RUNNING_TO_NEXT_NODE"
+            self.publish_event(
+                f"MISSION_JUNCTION_EXIT_CONFIRMED_{arrived_node}_TO_{next_node}"
+            )
+            self.publish_state()
+
+            self.get_logger().info(
+                f"Confirmed junction exit at {arrived_node} from {previous_node}; "
+                f"continuing to {next_node}"
+            )
+            return
+
         command = self.compute_junction_command(previous_node, arrived_node, next_node)
 
         if command is None:
@@ -1035,6 +1049,18 @@ class MissionManagerNode(Node):
     def is_junction(self, node_name: str) -> bool:
         node = self.nodes.get(node_name, {})
         return str(node.get("type", "")).strip().lower() == "junction"
+
+    def same_junction_group(self, node_a: str, node_b: str) -> bool:
+        node_a = node_a.strip().lower()
+        node_b = node_b.strip().lower()
+
+        if not self.is_junction(node_a) or not self.is_junction(node_b):
+            return False
+
+        group_a = str(self.nodes.get(node_a, {}).get("junction_group", node_a)).strip().lower()
+        group_b = str(self.nodes.get(node_b, {}).get("junction_group", node_b)).strip().lower()
+
+        return bool(group_a and group_a == group_b)
 
     def is_dead_end_station(self, node_name: str) -> bool:
         node = self.nodes.get(node_name, {})

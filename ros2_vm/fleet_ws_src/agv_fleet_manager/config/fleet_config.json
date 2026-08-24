@@ -8,117 +8,34 @@
     "agv_1": {
       "initial_node": "agv1_home",
       "priority": 20
-    },
-
-    "agv_2": {
-      "initial_node": "agv2_home",
-      "priority": 10
     }
   },
 
   "nodes": {
-    "agv2_home": {
-      "type": "home",
-      "pos": [0.0, 0.0],
-      "holding_allowed": true,
-      "persistent_occupancy": true,
-      "egress_nodes": ["j1"]
-    },
+    "agv1_home": {"type": "home", "pos": [1.3, -3.0], "holding_allowed": true, "persistent_occupancy": true, "egress_nodes": ["junction1_2"]},
+    "stores": {"type": "station", "pos": [3.2, -1.1], "holding_allowed": true, "persistent_occupancy": true, "egress_nodes": ["junction1_1"]},
+    "bench_1": {"type": "station", "pos": [0.6, 2.1], "holding_allowed": true, "persistent_occupancy": true, "egress_nodes": ["junction1_4"]},
+    "bench_2": {"type": "station", "pos": [0.6, 3.1], "holding_allowed": true, "persistent_occupancy": true, "egress_nodes": ["junction1_4"]},
+    "bench_3": {"type": "station", "pos": [-1.5, 1.4], "holding_allowed": true, "persistent_occupancy": true, "egress_nodes": ["junction1_3"]},
 
-    "j1": {
-      "type": "junction",
-      "pos": [1.0, 0.0],
-      "holding_allowed": true
-    },
-
-    "j2": {
-      "type": "junction",
-      "pos": [1.0, 1.0],
-      "holding_allowed": false
-    },
-
-    "j3": {
-      "type": "junction",
-      "pos": [1.0, 2.0],
-      "holding_allowed": true
-    },
-
-    "agv1_home": {
-      "type": "home",
-      "pos": [0.0, 2.0],
-      "holding_allowed": true,
-      "persistent_occupancy": true,
-      "egress_nodes": ["j3"]
-    },
-
-    "j4": {
-      "type": "junction",
-      "pos": [2.0, 2.0],
-      "holding_allowed": true
-    },
-
-    "j5": {
-      "type": "junction",
-      "pos": [3.0, 1.0],
-      "holding_allowed": true
-    },
-
-    "j6": {
-      "type": "junction",
-      "pos": [3.0, 0.5],
-      "holding_allowed": false
-    },
-
-    "j7": {
-      "type": "junction",
-      "pos": [2.0, 0.0],
-      "holding_allowed": false
-    },
-
-    "station_a": {
-      "type": "station",
-      "pos": [0.0, 1.0],
-      "holding_allowed": true,
-      "persistent_occupancy": true,
-      "egress_nodes": ["j2"]
-    },
-
-    "station_d": {
-      "type": "station",
-      "pos": [2.5, 0.5],
-      "holding_allowed": true,
-      "persistent_occupancy": true,
-      "egress_nodes": ["j6"]
-    },
-
-    "station_e": {
-      "type": "station",
-      "pos": [2.0, 0.5],
-      "holding_allowed": true,
-      "persistent_occupancy": true,
-      "egress_nodes": ["j7"]
-    }
+    "junction1_1": {"type": "junction", "pos": [2.0, 0.0], "holding_allowed": false},
+    "junction1_2": {"type": "junction", "pos": [1.3, -1.0], "holding_allowed": false},
+    "junction1_3": {"type": "junction", "pos": [0.0, 0.0], "holding_allowed": false},
+    "junction1_4": {"type": "junction", "pos": [0.6, 1.1], "holding_allowed": false}
   },
 
   "connections": [
-    ["agv2_home", "j1"],
+    ["agv1_home", "junction1_2"],
+    ["stores", "junction1_1"],
+    ["bench_1", "junction1_4"],
+    ["bench_2", "junction1_4"],
+    ["bench_3", "junction1_3"],
 
-    ["j1", "j2"],
-    ["j1", "j7"],
-
-    ["j2", "station_a"],
-    ["j2", "j3"],
-
-    ["j3", "agv1_home"],
-    ["j3", "j4"],
-
-    ["j4", "j5"],
-
-    ["j5", "j6"],
-
-    ["j6", "station_d"],
-    ["j6", "j7"],
-
-    ["j7", "station_e"]
+    ["junction1_1", "junction1_2"],
+    ["junction1_1", "junction1_3"],
+    ["junction1_1", "junction1_4"],
+    ["junction1_2", "junction1_3"],
+    ["junction1_2", "junction1_4"],
+    ["junction1_3", "junction1_4"]
   ]
 }

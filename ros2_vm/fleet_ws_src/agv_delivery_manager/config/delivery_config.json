@@ -6,8 +6,7 @@
     "bench_3"
   ],
   "home_nodes": {
-    "agv_1": "charger_1",
-    "agv_2": "charger_2"
+    "agv_1": "agv1_home"
   },
   "default_priority": 10
 }

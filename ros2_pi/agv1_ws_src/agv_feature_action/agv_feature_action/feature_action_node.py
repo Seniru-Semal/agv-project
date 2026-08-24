@@ -270,6 +270,7 @@ class FeatureActionNode(Node):
             nodes[clean_name] = {
                 "type": str(info.get("type", "unknown")).strip().lower(),
                 "dead_end": bool(info.get("dead_end", False)),
+                "junction_group": str(info.get("junction_group", clean_name)).strip().lower(),
             }
 
         self.nodes = nodes
@@ -280,6 +281,18 @@ class FeatureActionNode(Node):
 
     def is_station_node(self, node_name: str) -> bool:
         return not self.is_junction_node(node_name)
+
+    def same_junction_group(self, node_a: str, node_b: str) -> bool:
+        node_a = node_a.strip().lower()
+        node_b = node_b.strip().lower()
+
+        if not self.is_junction_node(node_a) or not self.is_junction_node(node_b):
+            return False
+
+        group_a = str(self.nodes.get(node_a, {}).get("junction_group", node_a)).strip().lower()
+        group_b = str(self.nodes.get(node_b, {}).get("junction_group", node_b)).strip().lower()
+
+        return bool(group_a and group_a == group_b)
 
     # ==================================================
     # Main callbacks
@@ -357,6 +370,50 @@ class FeatureActionNode(Node):
 
         return self.route_nodes[next_index]
 
+    def previous_route_node(self) -> str:
+        if not self.route_nodes:
+            return self.current_node
+
+        if 0 <= self.route_index < len(self.route_nodes):
+            return self.route_nodes[self.route_index]
+
+        return self.current_node
+
+    def expected_node_is_junction_exit(self, expected_node: str) -> bool:
+        previous_node = self.previous_route_node()
+        return self.same_junction_group(previous_node, expected_node)
+
+    def publish_wrong_rfid(self, expected: str, got: str):
+        self.stop_robot()
+
+        self.state = "RFID_MISMATCH"
+        self.pending_turn_command = "NONE"
+        self.clear_mode = "NONE"
+
+        self.publish_event(
+            f"FEATURE_ACTION_TIMEOUT_WRONG_RFID_EXPECTED_{expected}_GOT_{got}"
+        )
+        self.publish_state()
+
+        self.get_logger().error(
+            f"Wrong RFID detected. expected={expected}, got={got}"
+        )
+
+    def confirm_junction_exit_rfid(self, node_name: str):
+        self.state = "NORMAL"
+        self.pending_turn_command = "NONE"
+        self.clear_mode = "NONE"
+
+        self.publish_junction_reached(True)
+        self.publish_event("JUNCTION_REACHED")
+        self.publish_event(f"JUNCTION_EXIT_CONFIRMED_{node_name}")
+        self.publish_event("LINE_FOLLOW_RESUMED")
+        self.publish_state()
+
+        self.get_logger().info(
+            f"RFID junction exit confirmed without stopping: {node_name}"
+        )
+
     def rfid_node_callback(self, msg: String):
         if not self.use_rfid_node_events:
             return
@@ -367,12 +424,6 @@ class FeatureActionNode(Node):
             return
 
         if not self.feature_actions_allowed():
-            return
-
-        if self.state != "NORMAL":
-            self.get_logger().info(
-                f"Ignored RFID node {node_name}: state={self.state}"
-            )
             return
 
         now = time.time()
@@ -395,10 +446,37 @@ class FeatureActionNode(Node):
             )
             return
 
-        if node_name != expected:
-            self.get_logger().warn(
-                f"Ignored RFID node {node_name}: expected {expected}"
+        expected_is_exit = self.expected_node_is_junction_exit(expected)
+
+        if self.state != "NORMAL":
+            if self.state == "CLEARING_JUNCTION":
+                if node_name != expected:
+                    if self.is_junction_node(node_name):
+                        self.publish_wrong_rfid(expected, node_name)
+                    else:
+                        self.get_logger().info(
+                            f"Ignored non-route station RFID {node_name}: "
+                            f"expected {expected}"
+                        )
+                    return
+
+                if expected_is_exit:
+                    self.confirm_junction_exit_rfid(node_name)
+                    return
+
+            self.get_logger().info(
+                f"Ignored RFID node {node_name}: state={self.state}"
             )
+            return
+
+        if node_name != expected:
+            if self.is_junction_node(node_name):
+                self.publish_wrong_rfid(expected, node_name)
+            else:
+                self.get_logger().info(
+                    f"Ignored non-route station RFID {node_name}: "
+                    f"expected {expected}"
+                )
             return
 
         if self.ignore_station_until_junction and self.is_junction_node(node_name):
@@ -407,6 +485,10 @@ class FeatureActionNode(Node):
             self.get_logger().info(
                 "Station ignore auto-cleared because expected junction RFID was detected"
             )
+
+        if expected_is_exit:
+            self.confirm_junction_exit_rfid(node_name)
+            return
 
         self.stop_robot()
 
@@ -491,11 +573,11 @@ class FeatureActionNode(Node):
             return
 
         if command == "left":
-            self.command_turn("LEFT", self.left_turn_angle_deg)
+            self.command_smooth_arc_exit("LEFT")
             return
 
         if command == "right":
-            self.command_turn("RIGHT", self.right_turn_angle_deg)
+            self.command_smooth_arc_exit("RIGHT")
             return
 
         if command in ["uturn", "u-turn", "u_turn"]:
@@ -613,6 +695,16 @@ class FeatureActionNode(Node):
         self.publish_event("EXITING_JUNCTION_STRAIGHT_LINE_FOLLOW")
 
         self.get_logger().info("Junction command STRAIGHT: exiting with line follow")
+
+    def command_smooth_arc_exit(self, name: str):
+        self.pending_turn_command = name
+
+        self.start_junction_clearing_with_line_follow()
+        self.publish_event(f"EXITING_JUNCTION_{name}_ARC_LINE_FOLLOW")
+
+        self.get_logger().info(
+            f"Junction command {name}: exiting smooth arc with line follow"
+        )
 
     def command_turn(self, name: str, angle_deg: float):
         self.pending_turn_command = name
