@@ -265,6 +265,12 @@ class ArduinoBridgeNode(Node):
         if command == "C:REACQUIRE_LINE":
             return True
 
+        if command == "C:CLEAR_BRANCH":
+            return True
+
+        if command.startswith("C:SET_BRANCH,"):
+            return True
+
         if command.startswith("C:PIVOT_LEFT,"):
             return True
 

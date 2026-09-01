@@ -385,6 +385,7 @@ class FeatureActionNode(Node):
 
     def publish_wrong_rfid(self, expected: str, got: str):
         self.stop_robot()
+        self.send_branch_command("AUTO")
 
         self.state = "RFID_MISMATCH"
         self.pending_turn_command = "NONE"
@@ -400,6 +401,8 @@ class FeatureActionNode(Node):
         )
 
     def confirm_junction_exit_rfid(self, node_name: str):
+        self.send_branch_command("AUTO")
+
         self.state = "NORMAL"
         self.pending_turn_command = "NONE"
         self.clear_mode = "NONE"
@@ -609,6 +612,7 @@ class FeatureActionNode(Node):
             return
 
         self.stop_robot()
+        self.send_branch_command("AUTO")
 
         self.state = "NORMAL"
         self.pending_turn_command = "NONE"
@@ -691,6 +695,7 @@ class FeatureActionNode(Node):
     def command_straight_exit(self):
         self.pending_turn_command = "STRAIGHT"
 
+        self.send_branch_command("STRAIGHT")
         self.start_junction_clearing_with_line_follow()
         self.publish_event("EXITING_JUNCTION_STRAIGHT_LINE_FOLLOW")
 
@@ -699,6 +704,7 @@ class FeatureActionNode(Node):
     def command_smooth_arc_exit(self, name: str):
         self.pending_turn_command = name
 
+        self.send_branch_command(name)
         self.start_junction_clearing_with_line_follow()
         self.publish_event(f"EXITING_JUNCTION_{name}_ARC_LINE_FOLLOW")
 
@@ -710,6 +716,7 @@ class FeatureActionNode(Node):
         self.pending_turn_command = name
         self.state = "TURNING_AT_JUNCTION"
         self.move_start_time = time.time()
+        self.send_branch_command("AUTO")
 
         msg = Float32()
         msg.data = float(angle_deg)
@@ -808,6 +815,8 @@ class FeatureActionNode(Node):
                 if self.clear_mode == "RAW_DRIVE":
                     self.send_raw_start()
 
+                self.send_branch_command("AUTO")
+
                 self.state = "NORMAL"
                 self.pending_turn_command = "NONE"
                 self.clear_mode = "NONE"
@@ -841,6 +850,7 @@ class FeatureActionNode(Node):
             return
 
         self.stop_robot()
+        self.send_branch_command("AUTO")
 
         old_state = self.state
         self.state = "NORMAL"
@@ -881,6 +891,19 @@ class FeatureActionNode(Node):
 
     def send_raw_start(self):
         self.send_raw_command("C:START")
+
+    def send_branch_command(self, branch: str):
+        branch = str(branch).strip().upper()
+
+        if branch in ["", "AUTO", "NONE"]:
+            self.send_raw_command("C:CLEAR_BRANCH")
+            return
+
+        if branch not in ["LEFT", "RIGHT", "STRAIGHT"]:
+            self.get_logger().warn(f"Unknown Arduino branch command: {branch}")
+            return
+
+        self.send_raw_command(f"C:SET_BRANCH,{branch}")
 
     def stop_robot(self):
         msg = Bool()

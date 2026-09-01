@@ -1,6 +1,5 @@
 /*
-  AGV1 LARGE-CHASSIS MIGRATION - STAGE 1
-  Arduino Mega Line Follower + Motor Controller
+  AGV1 LARGE-CHASSIS MIGRATION - 13-SENSOR WHITE LINE FOLLOWER
 
   Hardware:
   - Arduino Mega
@@ -12,32 +11,11 @@
       Left  A/B = D2 / D3
       Right A/B = D18 / D19
 
-  Migration guarantees:
-  - Preserves AGV1's existing Raspberry Pi command/status protocol.
-  - Reports raw signed x4 quadrature ticks; no encoder scaling is done here.
-  - Keeps the BMI160/precise-turn logic on the Raspberry Pi unchanged.
-  - All IR thresholds are compile-time constants changed in this file.
-  - Adds a conservative PWM ceiling and output slew limiting for bench tests.
-  - Keeps encoder ticks available for Raspberry Pi odometry and motion control.
-
-  IMPORTANT:
-  - IBT-2 R_EN and L_EN must be held HIGH; all grounds must be common.
-  - Start with the drive wheels raised and a physical emergency stop available.
-  - The command watchdog is disabled until the Raspberry Pi sends a heartbeat.
-
   Behavior:
-  - Normal line following with PID
-  - Dynamic sharp-bend recovery based on recent POS direction
-  - No permanent old turn memory
-  - Manual pivot commands for ROS2 IMU turn manager
-  - RAW_DRIVE command for short encoder-based straight movement from marker to junction center
-  - Marker reporting:
-      ACTIVE   = dynamic line-tracking active count
-      MACTIVE  = separate marker active count
-      MTH      = marker signal threshold
-      WIDE=1   when many marker-active sensors see white
-      SOLID=1  when wide/solid white is held for more frames
-      MARKER=1 when WIDE=1
+  - White line on darker floor
+  - Common-emitter IR receiver circuit
+  - SIG = IR_OFF - IR_ON
+  - White line gives higher SIG value than floor
 */
 
 // ==================================================
@@ -52,13 +30,9 @@ const int SENSOR_PINS[SENSOR_COUNT] = {
   A7, A8, A9, A10, A11, A12
 };
 
-// Sensor layout:
-// A0 = rightmost
-// A12 = leftmost
-// Positive position = line toward right side
-// Negative position = line toward left side
-// The +/-350 range intentionally matches the old 8-sensor AGV1 firmware,
-// so the first PID tests can begin with the old numerical error scale.
+// A0 = rightmost, A12 = leftmost
+// Positive POS = line toward right side
+// Negative POS = line toward left side
 const int SENSOR_WEIGHTS[SENSOR_COUNT] = {
    350,  292,  233,  175,  117,   58,    0,
    -58, -117, -175, -233, -292, -350
@@ -100,31 +74,31 @@ const bool INVERT_RIGHT_ENCODER = true;
 
 const int MIN_MAX_SIGNAL = 40;
 const int MIN_CONTRAST = 20;
-//const int MIN_VALID_OFF_VALUE = 100;
 
-// Per-sensor reflected-signal thresholds used for line tracking.
-// signalValues[i] = IR-off reading - IR-on reading.
-// Replace these values after recording SIG over the line and floor.
-// Set REPORT_SENSOR_SIGNALS to true temporarily during calibration.
+// White-line detection:
+// signalValues[i] >= SENSOR_SIGNAL_THRESHOLD[i]
 const int SENSOR_SIGNAL_THRESHOLD[SENSOR_COUNT] = {
-  /* A0  rightmost */ 200,
-  /* A1            */ 200,
-  /* A2            */ 200,
-  /* A3            */ 200,
-  /* A4            */ 200,
-  /* A5            */ 200,
-  /* A6  centre    */ 200,
-  /* A7            */ 200,
-  /* A8            */ 200,
-  /* A9            */ 200,
-  /* A10           */ 200,
-  /* A11           */ 200,
-  /* A12 leftmost  */ 200
+  /* A0  rightmost */ 245,
+  /* A1            */ 255,
+  /* A2            */ 350,
+  /* A3            */ 310,
+  /* A4            */ 320,
+  /* A5            */ 320,
+  /* A6  centre    */ 300,
+  /* A7            */ 355,
+  /* A8            */ 315,
+  /* A9            */ 315,
+  /* A10           */ 290,
+  /* A11           */ 265,
+  /* A12 leftmost  */ 190
 };
+
+const int LINE_ACTIVE_MIN = 1;
+const int LINE_TOTAL_STRENGTH_MIN = 20;
 
 const bool REPORT_SENSOR_SIGNALS = true;
 
-const int ANALOG_SAMPLES = 3;
+const int ANALOG_SAMPLES = 5;
 const int ANALOG_SAMPLE_DELAY_US = 100;
 const int IR_SETTLE_DELAY_US = 1000;
 
@@ -132,66 +106,72 @@ const int IR_SETTLE_DELAY_US = 1000;
 // PID settings
 // ==================================================
 
-// Initial values only. The weight range matches the former AGV1 firmware,
-// but the larger chassis must be tuned at low speed.
-float Kp = 0.35;
-float Ki = 0.00;
-float Kd = 0.70;
+float Kp = 0.11;
+float Ki = 0.02;
+float Kd = 1.3;
 
-int baseSpeed = 30;
+int baseSpeed = 40;
 
-// Absolute safety ceiling applied throughout the complete motor command path.
-// 40/255 = 15.7% duty cycle.
 const int ABSOLUTE_MAX_MOTOR_PWM = 40;
 
-// Line-following limits. The absolute ceiling below remains authoritative.
-const int MAX_NORMAL_LINE_STEERING = 65;
-const int MAX_CORNER_LINE_STEERING = 120;
-const int MAX_CORNER_REVERSE_PWM = 60;
+const int MAX_NORMAL_LINE_STEERING = 30;
+const int MAX_CORNER_LINE_STEERING = 40;
+const int MAX_CORNER_REVERSE_PWM = 0;
 const int MAX_DERIVATIVE_STEP = 180;
 
-// Applied once per 20 ms control cycle. Commands reverse through zero.
 const int PWM_RISE_PER_CONTROL = 3;
 const int PWM_FALL_PER_CONTROL = 6;
 
 const float INTEGRAL_LIMIT = 300.0;
 
 // ==================================================
+// Active braking
+// ==================================================
+
+const bool ACTIVE_BRAKE_ON_STOP = true;
+const int ACTIVE_BRAKE_PWM = ABSOLUTE_MAX_MOTOR_PWM;
+const unsigned long ACTIVE_BRAKE_TIME_MS = 120;
+
+// ==================================================
 // Line recovery settings
 // ==================================================
 
-const int LINE_LOST_RECOVERY_FRAMES = 2;
-const int LINE_LOST_STOP_FRAMES = 25;
+const int LINE_LOST_RECOVERY_FRAMES = 5;
+const int LINE_LOST_STOP_FRAMES = 40;
 
-const int TURN_RECOVERY_PWM = 30;
+const int FORWARD_RECOVERY_PWM = 18;
+const unsigned long FORWARD_RECOVERY_TIME_MS = 350;
 
-const int CORNER_DETECT_POSITION = 250;
+const int CORNER_DETECT_POSITION = 220;
 
-const int REACQUIRE_POSITION_TOLERANCE = 150;
-const int REACQUIRE_CONFIRM_FRAMES = 3;
-const unsigned long MAX_TURN_RECOVERY_TIME_MS = 3000;
+const int REACQUIRE_POSITION_TOLERANCE = 170;
+const int REACQUIRE_CONFIRM_FRAMES = 5;
+const unsigned long MAX_TURN_RECOVERY_TIME_MS = 2500;
 
-// Dynamic recovery hint.
-// Recent POS positive -> recover right.
-// Recent POS negative -> recover left.
-const int RECOVERY_DIRECTION_MIN_POSITION = 35;
-const int RECOVERY_DIRECTION_CONFIRM_FRAMES = 2;
-const unsigned long RECOVERY_HINT_MAX_AGE_MS = 700;
+const int RECOVERY_DIRECTION_MIN_POSITION = 40;
+const int RECOVERY_DIRECTION_CONFIRM_FRAMES = 3;
+const unsigned long RECOVERY_HINT_MAX_AGE_MS = 800;
 
 // ==================================================
-// Marker / feature detection settings
+// Junction cluster telemetry settings
 // ==================================================
 
-// const int MARKER_SIGNAL_MIN = 60;
-// const int MARKER_SIGNAL_PERCENT_OF_MAX = 45;
+const int JUNCTION_WIDE_CLUSTER_MIN = 10;
 
-// Old AGV1 used 6/8 for WIDE and 7/8 for SOLID.
-// These are the nearest equivalent proportions for 13 sensors.
-const int WIDE_ACTIVE_MIN = 10;
-const int SOLID_ACTIVE_MIN = 12;
+// ==================================================
+// Junction branch selection settings
+// ==================================================
 
-const int WIDE_CONFIRM_FRAMES = 3;
-const int SOLID_CONFIRM_FRAMES = 5;
+const unsigned long BRANCH_COMMAND_TIMEOUT_MS = 10000;
+
+const int RIGHT_BRANCH_FIRST_INDEX = 0;
+const int RIGHT_BRANCH_LAST_INDEX = SENSOR_COUNT / 2;
+
+const int LEFT_BRANCH_FIRST_INDEX = SENSOR_COUNT / 2;
+const int LEFT_BRANCH_LAST_INDEX = SENSOR_COUNT - 1;
+
+const int STRAIGHT_BRANCH_FIRST_INDEX = 4;
+const int STRAIGHT_BRANCH_LAST_INDEX = 8;
 
 // ==================================================
 // Timing
@@ -200,10 +180,6 @@ const int SOLID_CONFIRM_FRAMES = 5;
 const unsigned long CONTROL_INTERVAL_MS = 20;
 const unsigned long STATUS_INTERVAL_MS = 50;
 
-// Keep disabled for protocol compatibility: one C:START currently permits
-// continuous following, and the existing Pi interface has no heartbeat yet.
-// Enable only after a ROS serial node sends any valid command more frequently
-// than COMMAND_WATCHDOG_TIMEOUT_MS.
 const bool COMMAND_WATCHDOG_ENABLED = false;
 const unsigned long COMMAND_WATCHDOG_TIMEOUT_MS = 500;
 
@@ -216,6 +192,7 @@ enum DriveState {
   STATE_FOLLOW,
   STATE_RECOVER_LEFT,
   STATE_RECOVER_RIGHT,
+  STATE_RECOVER_FORWARD,
   STATE_MANUAL_PIVOT_LEFT,
   STATE_MANUAL_PIVOT_RIGHT,
   STATE_RAW_DRIVE,
@@ -223,10 +200,21 @@ enum DriveState {
   STATE_ESTOP
 };
 
+enum BranchMode {
+  BRANCH_AUTO,
+  BRANCH_STRAIGHT,
+  BRANCH_LEFT,
+  BRANCH_RIGHT
+};
+
 DriveState driveState = STATE_IDLE;
+
+BranchMode branchMode = BRANCH_AUTO;
 
 bool followEnabled = false;
 bool eStopActive = false;
+bool forwardRecoveryAttempted = false;
+bool recoveryStopLatched = false;
 
 // ==================================================
 // Sensor state
@@ -235,16 +223,26 @@ bool eStopActive = false;
 int offValues[SENSOR_COUNT];
 int onValues[SENSOR_COUNT];
 int signalValues[SENSOR_COUNT];
+int lineStrengthValues[SENSOR_COUNT];
+bool lineActiveMask[SENSOR_COUNT];
 
 int currentLinePosition = 0;
 int activeSensorCount = 0;
 bool validLineForTracking = false;
 
+int clusterCount = 0;
+bool junctionCandidate = false;
+int selectedClusterIndex = -1;
+int selectedClusterStart = -1;
+int selectedClusterEnd = -1;
+int selectedClusterPosition = 0;
+int selectedClusterActiveCount = 0;
+
 int lineLostFrameCount = 0;
 int reacquireFrameCount = 0;
 
 // ==================================================
-// Dynamic recovery hint state
+// Recovery hint state
 // ==================================================
 
 int recoveryHintDirection = 0;
@@ -252,20 +250,6 @@ unsigned long recoveryHintTimeMs = 0;
 
 int recoveryCandidateDirection = 0;
 int recoveryCandidateFrames = 0;
-
-// ==================================================
-// Marker / feature state
-// ==================================================
-
-bool wideFeatureDetected = false;
-bool solidFeatureDetected = false;
-bool markerDetected = false;
-
-int wideFrameCount = 0;
-int solidFrameCount = 0;
-
-int markerActiveSensorCount = 0;
-int markerSignalThreshold = 0;
 
 // ==================================================
 // PID state
@@ -314,6 +298,7 @@ unsigned long lastControlTime = 0;
 unsigned long lastStatusTime = 0;
 unsigned long turnRecoveryStartTime = 0;
 unsigned long lastValidCommandTime = 0;
+unsigned long branchModeSetTimeMs = 0;
 
 // ==================================================
 // Encoder ISR helpers
@@ -487,6 +472,236 @@ void setIrEmitter(bool on) {
 }
 
 // ==================================================
+// Line cluster selection
+// ==================================================
+
+void clearLineSelectionState() {
+  activeSensorCount = 0;
+  validLineForTracking = false;
+  currentLinePosition = 0;
+
+  clusterCount = 0;
+  junctionCandidate = false;
+
+  selectedClusterIndex = -1;
+  selectedClusterStart = -1;
+  selectedClusterEnd = -1;
+  selectedClusterPosition = 0;
+  selectedClusterActiveCount = 0;
+}
+
+void expireBranchCommandIfNeeded() {
+  if (branchMode == BRANCH_AUTO) {
+    return;
+  }
+
+  if (millis() - branchModeSetTimeMs <= BRANCH_COMMAND_TIMEOUT_MS) {
+    return;
+  }
+
+  branchMode = BRANCH_AUTO;
+  branchModeSetTimeMs = 0;
+}
+
+void updateClusterTelemetry() {
+  clusterCount = 0;
+  junctionCandidate = false;
+
+  int widestCluster = 0;
+  int i = 0;
+
+  while (i < SENSOR_COUNT) {
+    while (i < SENSOR_COUNT && !lineActiveMask[i]) {
+      i++;
+    }
+
+    if (i >= SENSOR_COUNT) {
+      break;
+    }
+
+    int count = 0;
+
+    while (i < SENSOR_COUNT && lineActiveMask[i]) {
+      count++;
+      i++;
+    }
+
+    clusterCount++;
+
+    if (count > widestCluster) {
+      widestCluster = count;
+    }
+  }
+
+  junctionCandidate =
+      clusterCount > 1 ||
+      widestCluster >= JUNCTION_WIDE_CLUSTER_MIN;
+}
+
+bool acceptSelectedLine(
+  long weightedSum,
+  long totalSignal,
+  int count,
+  int clusterIndex,
+  int startIndex,
+  int endIndex
+) {
+  if (count < LINE_ACTIVE_MIN || totalSignal < LINE_TOTAL_STRENGTH_MIN) {
+    return false;
+  }
+
+  currentLinePosition = weightedSum / totalSignal;
+  activeSensorCount = count;
+  validLineForTracking = true;
+
+  selectedClusterIndex = clusterIndex;
+  selectedClusterStart = startIndex;
+  selectedClusterEnd = endIndex;
+  selectedClusterPosition = currentLinePosition;
+  selectedClusterActiveCount = count;
+
+  return true;
+}
+
+bool chooseClusterInRange(int mode, int firstIndex, int lastIndex) {
+  firstIndex = constrain(firstIndex, 0, SENSOR_COUNT - 1);
+  lastIndex = constrain(lastIndex, 0, SENSOR_COUNT - 1);
+
+  if (firstIndex > lastIndex) {
+    return false;
+  }
+
+  bool haveBest = false;
+  int bestClusterIndex = -1;
+  int bestStart = -1;
+  int bestEnd = -1;
+  int bestCount = 0;
+  int bestPosition = 0;
+  long bestWeightedSum = 0;
+  long bestTotalSignal = 0;
+
+  int clusterIndex = 0;
+  int i = firstIndex;
+
+  while (i <= lastIndex) {
+    while (i <= lastIndex && !lineActiveMask[i]) {
+      i++;
+    }
+
+    if (i > lastIndex) {
+      break;
+    }
+
+    int startIndex = i;
+    int count = 0;
+    long weightedSum = 0;
+    long totalSignal = 0;
+
+    while (i <= lastIndex && lineActiveMask[i]) {
+      count++;
+      weightedSum += (long)lineStrengthValues[i] * SENSOR_WEIGHTS[i];
+      totalSignal += lineStrengthValues[i];
+      i++;
+    }
+
+    int endIndex = i - 1;
+
+    if (totalSignal > 0) {
+      int position = weightedSum / totalSignal;
+      bool better = false;
+
+      if (!haveBest) {
+        better = true;
+      } else if (mode == BRANCH_LEFT) {
+        better =
+            position < bestPosition ||
+            (position == bestPosition && totalSignal > bestTotalSignal);
+      } else if (mode == BRANCH_RIGHT) {
+        better =
+            position > bestPosition ||
+            (position == bestPosition && totalSignal > bestTotalSignal);
+      } else if (mode == BRANCH_STRAIGHT) {
+        better =
+            abs(position) < abs(bestPosition) ||
+            (abs(position) == abs(bestPosition) && totalSignal > bestTotalSignal);
+      } else {
+        better =
+            totalSignal > bestTotalSignal ||
+            (totalSignal == bestTotalSignal && abs(position) < abs(bestPosition));
+      }
+
+      if (better) {
+        haveBest = true;
+        bestClusterIndex = clusterIndex;
+        bestStart = startIndex;
+        bestEnd = endIndex;
+        bestCount = count;
+        bestPosition = position;
+        bestWeightedSum = weightedSum;
+        bestTotalSignal = totalSignal;
+      }
+    }
+
+    clusterIndex++;
+  }
+
+  if (!haveBest) {
+    return false;
+  }
+
+  return acceptSelectedLine(
+    bestWeightedSum,
+    bestTotalSignal,
+    bestCount,
+    bestClusterIndex,
+    bestStart,
+    bestEnd
+  );
+}
+
+void selectLineForTracking() {
+  clearLineSelectionState();
+  expireBranchCommandIfNeeded();
+  updateClusterTelemetry();
+
+  bool selected = false;
+
+  if (branchMode == BRANCH_LEFT) {
+    selected = chooseClusterInRange(
+      BRANCH_LEFT,
+      LEFT_BRANCH_FIRST_INDEX,
+      LEFT_BRANCH_LAST_INDEX
+    );
+  } else if (branchMode == BRANCH_RIGHT) {
+    selected = chooseClusterInRange(
+      BRANCH_RIGHT,
+      RIGHT_BRANCH_FIRST_INDEX,
+      RIGHT_BRANCH_LAST_INDEX
+    );
+  } else if (branchMode == BRANCH_STRAIGHT) {
+    selected = chooseClusterInRange(
+      BRANCH_STRAIGHT,
+      STRAIGHT_BRANCH_FIRST_INDEX,
+      STRAIGHT_BRANCH_LAST_INDEX
+    );
+  }
+
+  if (selected) {
+    return;
+  }
+
+  BranchMode fallbackMode = BRANCH_AUTO;
+
+  if (branchMode == BRANCH_LEFT || branchMode == BRANCH_RIGHT) {
+    fallbackMode = branchMode;
+  } else if (branchMode == BRANCH_STRAIGHT || junctionCandidate) {
+    fallbackMode = BRANCH_STRAIGHT;
+  }
+
+  chooseClusterInRange(fallbackMode, 0, SENSOR_COUNT - 1);
+}
+
+// ==================================================
 // Sensor reading
 // ==================================================
 
@@ -504,6 +719,7 @@ void readSensorsSwitching() {
 
   for (int sample = 0; sample < ANALOG_SAMPLES; sample++) {
     for (int i = 0; i < SENSOR_COUNT; i++) {
+      analogRead(SENSOR_PINS[i]);
       offSums[i] += analogRead(SENSOR_PINS[i]);
     }
     delayMicroseconds(ANALOG_SAMPLE_DELAY_US);
@@ -514,6 +730,7 @@ void readSensorsSwitching() {
 
   for (int sample = 0; sample < ANALOG_SAMPLES; sample++) {
     for (int i = 0; i < SENSOR_COUNT; i++) {
+      analogRead(SENSOR_PINS[i]);
       onSums[i] += analogRead(SENSOR_PINS[i]);
     }
     delayMicroseconds(ANALOG_SAMPLE_DELAY_US);
@@ -521,7 +738,6 @@ void readSensorsSwitching() {
 
   setIrEmitter(false);
 
-  int maxOffValue = 0;
   int maxSignal = 0;
   int minSignal = 1023;
 
@@ -529,17 +745,15 @@ void readSensorsSwitching() {
     offValues[i] = offSums[i] / ANALOG_SAMPLES;
     onValues[i] = onSums[i] / ANALOG_SAMPLES;
 
-    int signal = onValues[i] - offValues[i];
+    int signal = offValues[i] - onValues[i];
 
     if (signal < 0) {
       signal = 0;
     }
 
     signalValues[i] = signal;
-
-    if (offValues[i] > maxOffValue) {
-      maxOffValue = offValues[i];
-    }
+    lineStrengthValues[i] = 0;
+    lineActiveMask[i] = false;
 
     if (signalValues[i] > maxSignal) {
       maxSignal = signalValues[i];
@@ -550,12 +764,8 @@ void readSensorsSwitching() {
     }
   }
 
-  activeSensorCount = 0;
-  validLineForTracking = false;
-
-  //if (maxOffValue < MIN_VALID_OFF_VALUE) {
-  //  return;
-  //}
+  clearLineSelectionState();
+  expireBranchCommandIfNeeded();
 
   if (maxSignal < MIN_MAX_SIGNAL) {
     return;
@@ -567,82 +777,18 @@ void readSensorsSwitching() {
     return;
   }
 
-  long weightedSum = 0;
-  long totalSignal = 0;
-
   for (int i = 0; i < SENSOR_COUNT; i++) {
     if (signalValues[i] >= SENSOR_SIGNAL_THRESHOLD[i]) {
-      activeSensorCount++;
-      weightedSum += (long)signalValues[i] * SENSOR_WEIGHTS[i];
-      totalSignal += signalValues[i];
+      lineStrengthValues[i] = signalValues[i] - SENSOR_SIGNAL_THRESHOLD[i];
+      lineActiveMask[i] = true;
     }
   }
 
-  if (activeSensorCount <= 0 || totalSignal <= 0) {
-    return;
-  }
-
-  currentLinePosition = weightedSum / totalSignal;
-  validLineForTracking = true;
+  selectLineForTracking();
 }
-
-// ==================================================
-// Marker / feature detection
-// ==================================================
-
-void updateMarkerDetection() {
-  markerActiveSensorCount = 0;
-
-  // Count sensors using the same calibrated thresholds
-  // used by the line detector.
-  for (int i = 0; i < SENSOR_COUNT; i++) {
-    if (signalValues[i] >= SENSOR_SIGNAL_THRESHOLD[i]) {
-      markerActiveSensorCount++;
-    }
-  }
-
-  bool wideCandidate =
-      markerActiveSensorCount >= WIDE_ACTIVE_MIN;
-
-  bool solidCandidate =
-      markerActiveSensorCount >= SOLID_ACTIVE_MIN;
-
-  if (wideCandidate) {
-    if (wideFrameCount < WIDE_CONFIRM_FRAMES) {
-      wideFrameCount++;
-    }
-  } else {
-    wideFrameCount = 0;
-  }
-
-  if (solidCandidate) {
-    if (solidFrameCount < SOLID_CONFIRM_FRAMES) {
-      solidFrameCount++;
-    }
-  } else {
-    solidFrameCount = 0;
-  }
-
-  wideFeatureDetected =
-      wideFrameCount >= WIDE_CONFIRM_FRAMES;
-
-  solidFeatureDetected =
-      solidFrameCount >= SOLID_CONFIRM_FRAMES;
-
-  markerDetected = wideFeatureDetected;
-
-  // Only retained for telemetry because all sensor
-  // thresholds are presently 200.
-  markerSignalThreshold = 200;
-}
-
-// ==================================================
-// Main control loop
-// ==================================================
 
 void runControlLoop() {
   readSensorsSwitching();
-  updateMarkerDetection();
 
   if (eStopActive) {
     stopMotors();
@@ -674,7 +820,7 @@ void runControlLoop() {
     return;
   }
 
-  if (driveState == STATE_RECOVER_LEFT || driveState == STATE_RECOVER_RIGHT) {
+  if (driveState == STATE_RECOVER_FORWARD) {
     handleRecoveryState();
     return;
   }
@@ -696,21 +842,13 @@ void runControlLoop() {
     return;
   }
 
-  int freshHint = getFreshRecoveryHint();
-
-  if (freshHint > 0) {
-    startRecoveryRight();
-    handleRecoveryState();
+  if (forwardRecoveryAttempted) {
+    stopDueToNoFreshRecoveryHint();
     return;
   }
 
-  if (freshHint < 0) {
-    startRecoveryLeft();
-    handleRecoveryState();
-    return;
-  }
-
-  stopDueToNoFreshRecoveryHint();
+  startForwardRecovery();
+  handleRecoveryState();
 }
 
 // ==================================================
@@ -774,19 +912,6 @@ void applyLinePid() {
     ABSOLUTE_MAX_MOTOR_PWM
   );
 
-  // Independent PID-output safety clamp.
-  leftCommand = constrain(
-    leftCommand,
-    -ABSOLUTE_MAX_MOTOR_PWM,
-    ABSOLUTE_MAX_MOTOR_PWM
-  );
-
-  rightCommand = constrain(
-    rightCommand,
-    -ABSOLUTE_MAX_MOTOR_PWM,
-    ABSOLUTE_MAX_MOTOR_PWM
-  );
-
   setDriveCommand(leftCommand, rightCommand);
 }
 
@@ -796,7 +921,7 @@ void resetPID() {
 }
 
 // ==================================================
-// Dynamic recovery hint logic
+// Recovery hint logic
 // ==================================================
 
 void updateRecoveryHintFromCurrentLine() {
@@ -851,69 +976,33 @@ void clearRecoveryHint() {
 // Recovery behavior
 // ==================================================
 
-void startRecoveryLeft() {
-  driveState = STATE_RECOVER_LEFT;
-  turnRecoveryStartTime = millis();
-  reacquireFrameCount = 0;
-  resetPID();
-}
-
-void startRecoveryRight() {
-  driveState = STATE_RECOVER_RIGHT;
+void startForwardRecovery() {
+  forwardRecoveryAttempted = true;
+  driveState = STATE_RECOVER_FORWARD;
   turnRecoveryStartTime = millis();
   reacquireFrameCount = 0;
   resetPID();
 }
 
 void handleRecoveryState() {
-  if (validLineForTracking) {
-    if (abs(currentLinePosition) <= REACQUIRE_POSITION_TOLERANCE) {
-      reacquireFrameCount++;
-
-      if (reacquireFrameCount >= REACQUIRE_CONFIRM_FRAMES) {
-        lineLostFrameCount = 0;
-        reacquireFrameCount = 0;
-
-        clearRecoveryHint();
-
-        driveState = STATE_FOLLOW;
-        resetPID();
-        applyLinePid();
-        return;
-      }
-    } else {
-      reacquireFrameCount = 0;
-    }
-  } else {
-    reacquireFrameCount = 0;
-  }
-
   unsigned long elapsed = millis() - turnRecoveryStartTime;
 
-  if (elapsed > MAX_TURN_RECOVERY_TIME_MS) {
-    followEnabled = false;
-    driveState = STATE_STOPPED;
-    stopMotors();
+  if (elapsed < FORWARD_RECOVERY_TIME_MS) {
+    setDriveCommand(FORWARD_RECOVERY_PWM, FORWARD_RECOVERY_PWM);
     return;
   }
 
-  if (driveState == STATE_RECOVER_LEFT) {
-    setDriveCommand(-TURN_RECOVERY_PWM, TURN_RECOVERY_PWM);
-  } else if (driveState == STATE_RECOVER_RIGHT) {
-    setDriveCommand(TURN_RECOVERY_PWM, -TURN_RECOVERY_PWM);
-  }
-}
-
-void stopDueToNoFreshRecoveryHint() {
   followEnabled = false;
   driveState = STATE_STOPPED;
+  recoveryStopLatched = true;
 
   lineLostFrameCount = 0;
   reacquireFrameCount = 0;
 
   clearRecoveryHint();
+  commandClearBranch();
   resetPID();
-  stopMotors();
+  brakeAndStopMotors();
 }
 
 // ==================================================
@@ -968,14 +1057,12 @@ int slewMotorCommand(int applied, int target) {
     return applied;
   }
 
-  // A requested direction reversal must pass through zero first.
   if ((applied > 0 && target < 0) || (applied < 0 && target > 0)) {
     target = 0;
   }
 
   int step = PWM_RISE_PER_CONTROL;
 
-  // Moving toward zero is deceleration and may use the faster step.
   if (abs(target) < abs(applied)) {
     step = PWM_FALL_PER_CONTROL;
   }
@@ -1010,17 +1097,68 @@ void writeSingleMotor(int rpwmPin, int lpwmPin, int command, bool invertMotor) {
   }
 }
 
-void stopMotors() {
+void coastMotorOutputs() {
+  analogWrite(LEFT_RPWM_PIN, 0);
+  analogWrite(LEFT_LPWM_PIN, 0);
+  analogWrite(RIGHT_RPWM_PIN, 0);
+  analogWrite(RIGHT_LPWM_PIN, 0);
+}
+
+void applyBrakePulseToMotor(int rpwmPin, int lpwmPin) {
+  analogWrite(rpwmPin, ACTIVE_BRAKE_PWM);
+  analogWrite(lpwmPin, ACTIVE_BRAKE_PWM);
+}
+
+void brakeMotorOutputsBriefly() {
+  applyBrakePulseToMotor(LEFT_RPWM_PIN, LEFT_LPWM_PIN);
+  applyBrakePulseToMotor(RIGHT_RPWM_PIN, RIGHT_LPWM_PIN);
+  delay(ACTIVE_BRAKE_TIME_MS);
+  coastMotorOutputs();
+}
+
+void clearMotorCommandMemory() {
   lastLeftCommand = 0;
   lastRightCommand = 0;
 
   rawLeftCommand = 0;
   rawRightCommand = 0;
+}
 
-  analogWrite(LEFT_RPWM_PIN, 0);
-  analogWrite(LEFT_LPWM_PIN, 0);
-  analogWrite(RIGHT_RPWM_PIN, 0);
-  analogWrite(RIGHT_LPWM_PIN, 0);
+void stopMotors() {
+  clearMotorCommandMemory();
+  coastMotorOutputs();
+}
+
+void brakeAndStopMotors() {
+  bool hadMotorCommand =
+    lastLeftCommand != 0 ||
+    lastRightCommand != 0 ||
+    rawLeftCommand != 0 ||
+    rawRightCommand != 0 ||
+    manualPivotPwm != 0;
+
+  clearMotorCommandMemory();
+  manualPivotPwm = 0;
+
+  if (ACTIVE_BRAKE_ON_STOP && hadMotorCommand) {
+    brakeMotorOutputsBriefly();
+  } else {
+    coastMotorOutputs();
+  }
+}
+
+void stopDueToNoFreshRecoveryHint() {
+  followEnabled = false;
+  driveState = STATE_STOPPED;
+  recoveryStopLatched = true;
+
+  lineLostFrameCount = 0;
+  reacquireFrameCount = 0;
+
+  clearRecoveryHint();
+  commandClearBranch();
+  resetPID();
+  brakeAndStopMotors();
 }
 
 // ==================================================
@@ -1098,6 +1236,18 @@ void processCommand(String command) {
     return;
   }
 
+  if (command.startsWith("C:SET_BRANCH,")) {
+    noteValidCommand();
+    commandSetBranch(command.substring(13));
+    return;
+  }
+
+  if (command == "C:CLEAR_BRANCH") {
+    noteValidCommand();
+    commandClearBranch();
+    return;
+  }
+
   if (command.startsWith("C:PIVOT_LEFT,")) {
     noteValidCommand();
     int pwm = command.substring(13).toInt();
@@ -1149,7 +1299,7 @@ void applyCommandWatchdog(unsigned long now) {
 }
 
 void commandStart() {
-  if (eStopActive) {
+  if (eStopActive || recoveryStopLatched) {
     return;
   }
 
@@ -1158,6 +1308,7 @@ void commandStart() {
 
   followEnabled = true;
   driveState = STATE_FOLLOW;
+  forwardRecoveryAttempted = false;
 
   lineLostFrameCount = 0;
   reacquireFrameCount = 0;
@@ -1181,10 +1332,12 @@ void commandStop() {
 
   lineLostFrameCount = 0;
   reacquireFrameCount = 0;
+  forwardRecoveryAttempted = false;
 
   clearRecoveryHint();
+  commandClearBranch();
   resetPID();
-  stopMotors();
+  brakeAndStopMotors();
 
   digitalWrite(STATUS_LED, LOW);
 }
@@ -1193,6 +1346,7 @@ void commandEstop() {
   eStopActive = true;
   followEnabled = false;
   driveState = STATE_ESTOP;
+  recoveryStopLatched = true;
 
   rawLeftCommand = 0;
   rawRightCommand = 0;
@@ -1200,10 +1354,12 @@ void commandEstop() {
 
   lineLostFrameCount = 0;
   reacquireFrameCount = 0;
+  forwardRecoveryAttempted = false;
 
   clearRecoveryHint();
+  commandClearBranch();
   resetPID();
-  stopMotors();
+  brakeAndStopMotors();
 
   digitalWrite(STATUS_LED, LOW);
 }
@@ -1212,6 +1368,7 @@ void commandReset() {
   eStopActive = false;
   followEnabled = false;
   driveState = STATE_IDLE;
+  recoveryStopLatched = false;
 
   rawLeftCommand = 0;
   rawRightCommand = 0;
@@ -1219,8 +1376,10 @@ void commandReset() {
 
   lineLostFrameCount = 0;
   reacquireFrameCount = 0;
+  forwardRecoveryAttempted = false;
 
   clearRecoveryHint();
+  commandClearBranch();
   resetPID();
   stopMotors();
 
@@ -1263,6 +1422,32 @@ void commandSetPid(String payload) {
   resetPID();
 }
 
+void commandSetBranch(String payload) {
+  payload.trim();
+  payload.toUpperCase();
+
+  if (payload == "LEFT") {
+    branchMode = BRANCH_LEFT;
+  } else if (payload == "RIGHT") {
+    branchMode = BRANCH_RIGHT;
+  } else if (payload == "STRAIGHT") {
+    branchMode = BRANCH_STRAIGHT;
+  } else if (payload == "AUTO") {
+    branchMode = BRANCH_AUTO;
+    branchModeSetTimeMs = 0;
+    return;
+  } else {
+    return;
+  }
+
+  branchModeSetTimeMs = millis();
+}
+
+void commandClearBranch() {
+  branchMode = BRANCH_AUTO;
+  branchModeSetTimeMs = 0;
+}
+
 void commandPivotLeft(int pwm) {
   if (eStopActive) {
     return;
@@ -1285,6 +1470,7 @@ void commandPivotLeft(int pwm) {
   reacquireFrameCount = 0;
 
   clearRecoveryHint();
+  commandClearBranch();
   resetPID();
 
   setDriveCommand(-manualPivotPwm, manualPivotPwm);
@@ -1314,6 +1500,7 @@ void commandPivotRight(int pwm) {
   reacquireFrameCount = 0;
 
   clearRecoveryHint();
+  commandClearBranch();
   resetPID();
 
   setDriveCommand(manualPivotPwm, -manualPivotPwm);
@@ -1360,6 +1547,7 @@ void commandRawDrive(String payload) {
   reacquireFrameCount = 0;
 
   clearRecoveryHint();
+  commandClearBranch();
   resetPID();
 
   setDriveCommand(rawLeftCommand, rawRightCommand);
@@ -1435,8 +1623,6 @@ void reportStatus() {
   Serial.print(";RAWR=");
   Serial.print(rawRightCommand);
 
-  // Retained as fixed values for compatibility with Raspberry Pi parsers
-  // written for the former wheel-synchronization telemetry format.
   Serial.print(";WSYNC=0");
   Serial.print(";DL=0");
   Serial.print(";DR=0");
@@ -1460,20 +1646,29 @@ void reportStatus() {
   Serial.print(";CFR=");
   Serial.print(recoveryCandidateFrames);
 
-  Serial.print(";MACTIVE=");
-  Serial.print(markerActiveSensorCount);
+  Serial.print(";CLUST=");
+  Serial.print(clusterCount);
 
-  Serial.print(";MTH=");
-  Serial.print(markerSignalThreshold);
+  Serial.print(";JUNC=");
+  Serial.print(junctionCandidate ? 1 : 0);
 
-  Serial.print(";WIDE=");
-  Serial.print(wideFeatureDetected ? 1 : 0);
+  Serial.print(";SEL=");
+  Serial.print(selectedClusterIndex);
 
-  Serial.print(";SOLID=");
-  Serial.print(solidFeatureDetected ? 1 : 0);
+  Serial.print(";SSTART=");
+  Serial.print(selectedClusterStart);
 
-  Serial.print(";MARKER=");
-  Serial.print(markerDetected ? 1 : 0);
+  Serial.print(";SEND=");
+  Serial.print(selectedClusterEnd);
+
+  Serial.print(";SPOS=");
+  Serial.print(selectedClusterPosition);
+
+  Serial.print(";SACT=");
+  Serial.print(selectedClusterActiveCount);
+
+  Serial.print(";BMODE=");
+  Serial.print(branchModeToText(branchMode));
 
   if (REPORT_SENSOR_SIGNALS) {
     Serial.print(";SIG=");
@@ -1490,7 +1685,24 @@ void reportStatus() {
   Serial.println();
 }
 
-const char* stateToText(DriveState state) {
+const char* branchModeToText(int mode) {
+  switch (mode) {
+    case BRANCH_STRAIGHT:
+      return "STRAIGHT";
+
+    case BRANCH_LEFT:
+      return "LEFT";
+
+    case BRANCH_RIGHT:
+      return "RIGHT";
+
+    case BRANCH_AUTO:
+    default:
+      return "AUTO";
+  }
+}
+
+const char* stateToText(int state) {
   switch (state) {
     case STATE_IDLE:
       return "IDLE";
@@ -1503,6 +1715,9 @@ const char* stateToText(DriveState state) {
 
     case STATE_RECOVER_RIGHT:
       return "RECOVER_RIGHT";
+
+    case STATE_RECOVER_FORWARD:
+      return "RECOVER_FORWARD";
 
     case STATE_MANUAL_PIVOT_LEFT:
       return "PIVOT_LEFT";
