@@ -117,11 +117,31 @@ class PlannedRouteFleetManagerNode(
             )
         )
 
+        self.directed_connections = self.load_directed_connections()
+        self.undirected_connections = set()
+
+        if not self.directed_connections:
+            self.undirected_connections = set(
+                self.connections
+            )
+
+        for (
+            node_a,
+            node_b,
+        ) in self.directed_connections:
+            self.connections.add(
+                edge_key(
+                    node_a,
+                    node_b,
+                )
+            )
+
         self.track_planner = TrackPlanner(
             self.nodes,
             list(
-                self.connections
+                self.undirected_connections
             ),
+            directed_connections=self.directed_connections,
         )
 
         for (
@@ -224,6 +244,43 @@ class PlannedRouteFleetManagerNode(
             "egress_borrowing="
             f"{self.allow_idle_egress_borrowing}"
         )
+
+    # ==================================================
+    # Config helpers
+    # ==================================================
+
+    def load_directed_connections(
+        self,
+    ) -> List[Tuple[str, str]]:
+        raw_items = self.config.get(
+            "directed_connections",
+            [],
+        )
+
+        if not isinstance(
+            raw_items,
+            list,
+        ):
+            return []
+
+        result: List[Tuple[str, str]] = []
+
+        for item in raw_items:
+            if (
+                not isinstance(item, list)
+                or len(item) != 2
+            ):
+                continue
+
+            node_a = str(item[0]).strip().lower()
+            node_b = str(item[1]).strip().lower()
+
+            if node_a not in self.nodes or node_b not in self.nodes:
+                continue
+
+            result.append((node_a, node_b))
+
+        return result
 
     # ==================================================
     # ROS interfaces

@@ -25,11 +25,11 @@ class FeatureActionNode(Node):
         self.declare_parameter("junction_center_offset_mm", 190.0)
         self.declare_parameter("station_stop_offset_mm", 200.0)
 
-        self.declare_parameter("approach_raw_left_pwm", 120)
-        self.declare_parameter("approach_raw_right_pwm", 120)
+        self.declare_parameter("approach_raw_left_pwm", 30)
+        self.declare_parameter("approach_raw_right_pwm", 30)
 
-        self.declare_parameter("exit_raw_left_pwm", 120)
-        self.declare_parameter("exit_raw_right_pwm", 120)
+        self.declare_parameter("exit_raw_left_pwm", 30)
+        self.declare_parameter("exit_raw_right_pwm", 30)
 
         self.declare_parameter("clear_junction_ignore_distance_mm", 300.0)
 
@@ -126,6 +126,8 @@ class FeatureActionNode(Node):
         self.move_start_left_ticks: Optional[int] = None
         self.move_start_right_ticks: Optional[int] = None
         self.move_target_ticks = 0.0
+        self.move_target_node = ""
+        self.move_mode = "NONE"
         self.move_start_time = 0.0
 
         self.clear_start_left_ticks: Optional[int] = None
@@ -271,9 +273,36 @@ class FeatureActionNode(Node):
                 "type": str(info.get("type", "unknown")).strip().lower(),
                 "dead_end": bool(info.get("dead_end", False)),
                 "junction_group": str(info.get("junction_group", clean_name)).strip().lower(),
+                "junction_role": str(info.get("junction_role", "")).strip().lower(),
+                "approach_offset_mm": self.safe_float(
+                    info.get("approach_offset_mm", 0.0),
+                    0.0,
+                ),
+                "approach_offsets_mm": self.clean_offset_map(
+                    info.get("approach_offsets_mm", {}),
+                ),
             }
 
         self.nodes = nodes
+
+    def clean_offset_map(self, raw_value: Any) -> Dict[str, float]:
+        if not isinstance(raw_value, dict):
+            return {}
+
+        result: Dict[str, float] = {}
+
+        for node_name, offset_mm in raw_value.items():
+            clean_name = str(node_name).strip().lower()
+
+            if not clean_name:
+                continue
+
+            result[clean_name] = max(
+                0.0,
+                self.safe_float(offset_mm, 0.0),
+            )
+
+        return result
 
     def is_junction_node(self, node_name: str) -> bool:
         node = self.nodes.get(node_name.strip().lower(), {})
@@ -281,6 +310,31 @@ class FeatureActionNode(Node):
 
     def is_station_node(self, node_name: str) -> bool:
         return not self.is_junction_node(node_name)
+
+    def junction_role(self, node_name: str) -> str:
+        node_name = node_name.strip().lower()
+        node = self.nodes.get(node_name, {})
+        role = str(node.get("junction_role", "")).strip().lower()
+
+        if role:
+            return role
+
+        if self.is_junction_node(node_name) and node_name.endswith("_center"):
+            return "center"
+
+        return ""
+
+    def is_junction_center_node(self, node_name: str) -> bool:
+        return self.is_junction_node(node_name) and self.junction_role(node_name) in [
+            "center",
+            "decision",
+        ]
+
+    def is_junction_exit_node(self, node_name: str) -> bool:
+        return self.is_junction_node(node_name) and self.junction_role(node_name) in [
+            "exit",
+            "verification",
+        ]
 
     def same_junction_group(self, node_a: str, node_b: str) -> bool:
         node_a = node_a.strip().lower()
@@ -293,6 +347,67 @@ class FeatureActionNode(Node):
         group_b = str(self.nodes.get(node_b, {}).get("junction_group", node_b)).strip().lower()
 
         return bool(group_a and group_a == group_b)
+
+    def is_junction_exit_transition(self, previous_node: str, exit_node: str) -> bool:
+        previous_node = previous_node.strip().lower()
+        exit_node = exit_node.strip().lower()
+
+        return (
+            self.is_junction_center_node(previous_node)
+            and self.is_junction_exit_node(exit_node)
+            and self.same_junction_group(previous_node, exit_node)
+        )
+
+    def should_ignore_repeated_previous_rfid(self, seen_node: str) -> bool:
+        seen_node = seen_node.strip().lower()
+        previous_node = self.previous_route_node()
+        current_node = self.current_node.strip().lower()
+
+        return bool(
+            seen_node
+            and (
+                seen_node == previous_node
+                or seen_node == current_node
+            )
+        )
+
+    def should_ignore_approach_exit_rfid(self, expected_node: str, seen_node: str) -> bool:
+        expected_node = expected_node.strip().lower()
+        seen_node = seen_node.strip().lower()
+
+        return (
+            seen_node == self.previous_route_node()
+            and
+            self.is_junction_center_node(expected_node)
+            and self.is_junction_exit_node(seen_node)
+            and self.same_junction_group(expected_node, seen_node)
+        )
+
+    def should_ignore_clearing_center_rfid(self, expected_node: str, seen_node: str) -> bool:
+        expected_node = expected_node.strip().lower()
+        seen_node = seen_node.strip().lower()
+
+        return (
+            self.is_junction_exit_node(expected_node)
+            and self.is_junction_center_node(seen_node)
+            and self.same_junction_group(expected_node, seen_node)
+        )
+
+    def approach_offset_mm_for_node(self, node_name: str) -> float:
+        node_name = node_name.strip().lower()
+        node = self.nodes.get(node_name, {})
+        previous = self.previous_route_node()
+
+        offsets = node.get("approach_offsets_mm", {})
+
+        if isinstance(offsets, dict):
+            if previous in offsets:
+                return max(0.0, float(offsets[previous]))
+
+            if "*" in offsets:
+                return max(0.0, float(offsets["*"]))
+
+        return max(0.0, float(node.get("approach_offset_mm", 0.0)))
 
     # ==================================================
     # Main callbacks
@@ -381,7 +496,7 @@ class FeatureActionNode(Node):
 
     def expected_node_is_junction_exit(self, expected_node: str) -> bool:
         previous_node = self.previous_route_node()
-        return self.same_junction_group(previous_node, expected_node)
+        return self.is_junction_exit_transition(previous_node, expected_node)
 
     def publish_wrong_rfid(self, expected: str, got: str):
         self.stop_robot()
@@ -389,6 +504,8 @@ class FeatureActionNode(Node):
 
         self.state = "RFID_MISMATCH"
         self.pending_turn_command = "NONE"
+        self.move_target_node = ""
+        self.move_mode = "NONE"
         self.clear_mode = "NONE"
 
         self.publish_event(
@@ -405,6 +522,8 @@ class FeatureActionNode(Node):
 
         self.state = "NORMAL"
         self.pending_turn_command = "NONE"
+        self.move_target_node = ""
+        self.move_mode = "NONE"
         self.clear_mode = "NONE"
 
         self.publish_junction_reached(True)
@@ -416,6 +535,31 @@ class FeatureActionNode(Node):
         self.get_logger().info(
             f"RFID junction exit confirmed without stopping: {node_name}"
         )
+
+    def handle_expected_junction_rfid(self, node_name: str):
+        offset_mm = self.approach_offset_mm_for_node(node_name)
+
+        if offset_mm > 0.0:
+            self.start_move_to_junction_center(
+                offset_mm=offset_mm,
+                target_node=node_name,
+                use_line_follow=True,
+            )
+            return
+
+        self.stop_robot()
+
+        self.state = "WAITING_FOR_JUNCTION_COMMAND"
+        self.pending_turn_command = "NONE"
+        self.move_target_node = ""
+        self.move_mode = "NONE"
+        self.clear_mode = "NONE"
+
+        self.publish_junction_reached(True)
+        self.publish_event("JUNCTION_REACHED")
+        self.publish_state()
+
+        self.get_logger().info(f"RFID junction reached: {node_name}")
 
     def rfid_node_callback(self, msg: String):
         if not self.use_rfid_node_events:
@@ -452,8 +596,53 @@ class FeatureActionNode(Node):
         expected_is_exit = self.expected_node_is_junction_exit(expected)
 
         if self.state != "NORMAL":
+            if self.state == "MOVING_TO_JUNCTION_CENTER":
+                if (
+                    node_name == self.move_target_node
+                    or self.should_ignore_repeated_previous_rfid(node_name)
+                ):
+                    self.get_logger().info(
+                        f"Ignored RFID node {node_name}: "
+                        "already measuring distance to junction point"
+                    )
+                    return
+
+                if self.should_ignore_approach_exit_rfid(
+                    self.move_target_node,
+                    node_name,
+                ):
+                    self.get_logger().info(
+                        f"Ignored approach-side junction exit RFID {node_name}: "
+                        f"moving to {self.move_target_node}"
+                    )
+                    return
+
+                if self.is_junction_node(node_name):
+                    target = self.move_target_node or expected
+                    self.publish_wrong_rfid(target, node_name)
+                else:
+                    self.get_logger().info(
+                        f"Ignored non-route station RFID {node_name}: "
+                        f"moving to junction point for {self.move_target_node}"
+                    )
+                return
+
             if self.state == "CLEARING_JUNCTION":
                 if node_name != expected:
+                    if self.should_ignore_repeated_previous_rfid(node_name):
+                        self.get_logger().info(
+                            f"Ignored repeated RFID {node_name}: "
+                            f"clearing toward {expected}"
+                        )
+                        return
+
+                    if self.should_ignore_clearing_center_rfid(expected, node_name):
+                        self.get_logger().info(
+                            f"Ignored junction center RFID {node_name}: "
+                            f"clearing toward exit {expected}"
+                        )
+                        return
+
                     if self.is_junction_node(node_name):
                         self.publish_wrong_rfid(expected, node_name)
                     else:
@@ -467,12 +656,30 @@ class FeatureActionNode(Node):
                     self.confirm_junction_exit_rfid(node_name)
                     return
 
+                if self.is_junction_node(node_name):
+                    self.send_branch_command("AUTO")
+                    self.handle_expected_junction_rfid(node_name)
+                    return
+
             self.get_logger().info(
                 f"Ignored RFID node {node_name}: state={self.state}"
             )
             return
 
         if node_name != expected:
+            if self.should_ignore_repeated_previous_rfid(node_name):
+                self.get_logger().info(
+                    f"Ignored repeated RFID {node_name}: expected {expected}"
+                )
+                return
+
+            if self.should_ignore_approach_exit_rfid(expected, node_name):
+                self.get_logger().info(
+                    f"Ignored approach-side junction exit RFID {node_name}: "
+                    f"expected center {expected}"
+                )
+                return
+
             if self.is_junction_node(node_name):
                 self.publish_wrong_rfid(expected, node_name)
             else:
@@ -493,19 +700,11 @@ class FeatureActionNode(Node):
             self.confirm_junction_exit_rfid(node_name)
             return
 
-        self.stop_robot()
-
         if self.is_junction_node(node_name):
-            self.state = "WAITING_FOR_JUNCTION_COMMAND"
-            self.pending_turn_command = "NONE"
-            self.clear_mode = "NONE"
-
-            self.publish_junction_reached(True)
-            self.publish_event("JUNCTION_REACHED")
-            self.publish_state()
-
-            self.get_logger().info(f"RFID junction reached: {node_name}")
+            self.handle_expected_junction_rfid(node_name)
             return
+
+        self.stop_robot()
 
         if self.ignore_station_until_junction:
             self.get_logger().warn(
@@ -515,6 +714,8 @@ class FeatureActionNode(Node):
 
         self.state = "STATION_REACHED"
         self.pending_turn_command = "NONE"
+        self.move_target_node = ""
+        self.move_mode = "NONE"
         self.clear_mode = "NONE"
 
         self.publish_station_reached(True)
@@ -616,6 +817,8 @@ class FeatureActionNode(Node):
 
         self.state = "NORMAL"
         self.pending_turn_command = "NONE"
+        self.move_target_node = ""
+        self.move_mode = "NONE"
         self.clear_mode = "NONE"
 
         self.ignore_station_until_junction = False
@@ -640,14 +843,28 @@ class FeatureActionNode(Node):
     # Optical backup state machine
     # ==================================================
 
-    def start_move_to_junction_center(self):
+    def start_move_to_junction_center(
+        self,
+        offset_mm: Optional[float] = None,
+        target_node: str = "",
+        use_line_follow: bool = False,
+    ):
         if not self.have_ticks():
             self.get_logger().warn("Cannot move to junction center: no encoder ticks yet")
             return
 
+        if offset_mm is None:
+            target_ticks = self.junction_center_offset_ticks
+            offset_mm = self.junction_center_offset_mm
+        else:
+            offset_mm = max(0.0, float(offset_mm))
+            target_ticks = offset_mm * self.ticks_per_mm
+
         self.move_start_left_ticks = self.latest_left_ticks
         self.move_start_right_ticks = self.latest_right_ticks
-        self.move_target_ticks = self.junction_center_offset_ticks
+        self.move_target_ticks = target_ticks
+        self.move_target_node = target_node.strip().lower()
+        self.move_mode = "LINE_FOLLOW" if use_line_follow else "RAW_DRIVE"
         self.move_start_time = time.time()
 
         self.state = "MOVING_TO_JUNCTION_CENTER"
@@ -657,10 +874,36 @@ class FeatureActionNode(Node):
         self.publish_junction_reached(False)
         self.publish_event("MOVING_TO_JUNCTION_CENTER")
 
-        self.send_raw_drive(
-            self.approach_raw_left_pwm,
-            self.approach_raw_right_pwm,
+        if use_line_follow:
+            self.send_raw_start()
+        else:
+            self.send_raw_drive(
+                self.approach_raw_left_pwm,
+                self.approach_raw_right_pwm,
+            )
+
+        self.get_logger().info(
+            f"Moving to junction center for {offset_mm:.1f} mm "
+            f"({target_ticks:.1f} ticks), mode={self.move_mode}"
         )
+
+    def finish_move_to_junction_center(self, rfid_confirmed: bool = False):
+        self.stop_robot()
+
+        reached_node = self.move_target_node
+
+        self.state = "WAITING_FOR_JUNCTION_COMMAND"
+        self.pending_turn_command = "NONE"
+        self.move_target_node = ""
+        self.move_mode = "NONE"
+
+        self.publish_junction_reached(True)
+        self.publish_event("JUNCTION_REACHED")
+
+        if rfid_confirmed:
+            self.publish_event(f"JUNCTION_CENTER_RFID_CONFIRMED_{reached_node}")
+
+        self.publish_state()
 
     def handle_station_approach(self):
         if self.station_stop_offset_ticks <= 0.0:
@@ -681,6 +924,8 @@ class FeatureActionNode(Node):
         self.move_start_time = time.time()
 
         self.state = "MOVING_TO_STATION_STOP"
+        self.move_target_node = ""
+        self.move_mode = "RAW_DRIVE"
         self.publish_event("MOVING_TO_STATION_STOP")
 
         self.send_raw_drive(
@@ -739,6 +984,7 @@ class FeatureActionNode(Node):
         self.clear_start_left_ticks = self.latest_left_ticks
         self.clear_start_right_ticks = self.latest_right_ticks
         self.clear_mode = "RAW_DRIVE"
+        self.move_mode = "NONE"
 
         self.state = "CLEARING_JUNCTION"
         self.move_start_time = time.time()
@@ -760,6 +1006,7 @@ class FeatureActionNode(Node):
         self.clear_start_left_ticks = self.latest_left_ticks
         self.clear_start_right_ticks = self.latest_right_ticks
         self.clear_mode = "LINE_FOLLOW"
+        self.move_mode = "NONE"
 
         self.state = "CLEARING_JUNCTION"
         self.move_start_time = time.time()
@@ -776,14 +1023,7 @@ class FeatureActionNode(Node):
             )
 
             if distance >= self.move_target_ticks:
-                self.stop_robot()
-
-                self.state = "WAITING_FOR_JUNCTION_COMMAND"
-                self.pending_turn_command = "NONE"
-
-                self.publish_junction_reached(True)
-                self.publish_event("JUNCTION_REACHED")
-                self.publish_state()
+                self.finish_move_to_junction_center(rfid_confirmed=False)
 
             return
 
@@ -797,6 +1037,8 @@ class FeatureActionNode(Node):
                 self.stop_robot()
 
                 self.state = "STATION_REACHED"
+                self.move_target_node = ""
+                self.move_mode = "NONE"
                 self.publish_station_reached(True)
                 self.publish_event("STATION_REACHED")
                 self.publish_state()
@@ -855,6 +1097,8 @@ class FeatureActionNode(Node):
         old_state = self.state
         self.state = "NORMAL"
         self.pending_turn_command = "NONE"
+        self.move_target_node = ""
+        self.move_mode = "NONE"
         self.clear_mode = "NONE"
         self.ignore_station_until_junction = False
 
@@ -988,6 +1232,13 @@ class FeatureActionNode(Node):
             return int(value)
         except ValueError:
             return 0
+
+    @staticmethod
+    def safe_float(value: Any, default: float) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
 
 
 def main(args=None):

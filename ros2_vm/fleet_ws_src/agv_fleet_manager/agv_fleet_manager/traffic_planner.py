@@ -58,6 +58,9 @@ class TrackPlanner:
         connections: Iterable[
             Tuple[str, str]
         ],
+        directed_connections: Iterable[
+            Tuple[str, str]
+        ] = (),
     ) -> None:
         self.nodes = nodes
 
@@ -72,6 +75,23 @@ class TrackPlanner:
                 node_a,
                 node_b,
             ) in connections
+        }
+
+        self.directed_connections: Set[
+            Tuple[str, str]
+        ] = {
+            (
+                str(node_a)
+                .strip()
+                .lower(),
+                str(node_b)
+                .strip()
+                .lower(),
+            )
+            for (
+                node_a,
+                node_b,
+            ) in directed_connections
         }
 
         self.adjacency: Dict[
@@ -96,6 +116,22 @@ class TrackPlanner:
                 node_b
             ].append(
                 node_a
+            )
+
+        for (
+            node_a,
+            node_b,
+        ) in self.directed_connections:
+            if (
+                node_a not in self.nodes
+                or node_b not in self.nodes
+            ):
+                continue
+
+            self.adjacency[
+                node_a
+            ].append(
+                node_b
             )
 
         for neighbors in (

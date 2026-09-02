@@ -153,6 +153,15 @@ class MissionManagerNode(
             (
                 node_a,
                 node_b,
+            ) in getattr(
+                self,
+                "directed_connections",
+                [],
+            )
+            or
+            (
+                node_a,
+                node_b,
             ) in self.connections
             or (
                 node_b,
@@ -236,6 +245,12 @@ class MissionManagerNode(
 
             if not self.is_junction(
                 at_node
+            ):
+                continue
+
+            if self.is_junction_exit_transition(
+                previous,
+                at_node,
             ):
                 continue
 

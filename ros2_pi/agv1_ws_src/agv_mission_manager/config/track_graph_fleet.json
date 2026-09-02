@@ -3,8 +3,8 @@
   "station_exit": {
     "dead_end_turn_deg": 180.0,
     "raw_drive_mm": 200.0,
-    "raw_left_pwm": 120,
-    "raw_right_pwm": 120,
+    "raw_left_pwm": 30,
+    "raw_right_pwm": 30,
     "after_turn_delay_sec": 0.5
   },
   "nodes": {
@@ -14,10 +14,57 @@
     "bench_2": {"type": "station", "pos": [0.6, 3.1], "dead_end": false},
     "bench_3": {"type": "station", "pos": [-1.5, 1.4], "dead_end": false},
 
-    "junction1_1": {"type": "junction", "junction_group": "junction1", "pos": [2.0, 0.0]},
-    "junction1_2": {"type": "junction", "junction_group": "junction1", "pos": [1.3, -1.0]},
-    "junction1_3": {"type": "junction", "junction_group": "junction1", "pos": [0.0, 0.0]},
-    "junction1_4": {"type": "junction", "junction_group": "junction1", "pos": [0.6, 1.1]}
+    "junction1_center": {
+      "type": "junction",
+      "junction_group": "junction1",
+      "junction_role": "center",
+      "pos": [1.0, 0.0],
+      "approach_offset_mm": 0.0,
+      "approach_offsets_mm": {
+        "junction1_1": 0.0,
+        "junction1_2": 0.0,
+        "junction1_3": 0.0,
+        "junction1_4": 0.0
+      }
+    },
+
+    "junction1_1": {
+      "type": "junction",
+      "junction_group": "junction1",
+      "junction_role": "exit",
+      "pos": [2.0, 0.0],
+      "approach_offsets_mm": {
+        "stores": 0.0
+      }
+    },
+    "junction1_2": {
+      "type": "junction",
+      "junction_group": "junction1",
+      "junction_role": "exit",
+      "pos": [1.3, -1.0],
+      "approach_offsets_mm": {
+        "agv1_home": 0.0
+      }
+    },
+    "junction1_3": {
+      "type": "junction",
+      "junction_group": "junction1",
+      "junction_role": "exit",
+      "pos": [0.0, 0.0],
+      "approach_offsets_mm": {
+        "bench_3": 0.0
+      }
+    },
+    "junction1_4": {
+      "type": "junction",
+      "junction_group": "junction1",
+      "junction_role": "exit",
+      "pos": [0.6, 1.1],
+      "approach_offsets_mm": {
+        "bench_1": 0.0,
+        "bench_2": 0.0
+      }
+    }
   },
   "connections": [
     ["agv1_home", "junction1_2"],
@@ -26,12 +73,33 @@
     ["bench_2", "junction1_4"],
     ["bench_3", "junction1_3"],
 
-    ["junction1_1", "junction1_2"],
-    ["junction1_1", "junction1_3"],
-    ["junction1_1", "junction1_4"],
-    ["junction1_2", "junction1_3"],
-    ["junction1_2", "junction1_4"],
-    ["junction1_3", "junction1_4"]
+    ["junction1_center", "junction1_1"],
+    ["junction1_center", "junction1_2"],
+    ["junction1_center", "junction1_3"],
+    ["junction1_center", "junction1_4"]
+  ],
+  "directed_connections": [
+    ["stores", "junction1_1"],
+    ["junction1_1", "junction1_center"],
+    ["junction1_center", "junction1_1"],
+    ["junction1_1", "stores"],
+
+    ["agv1_home", "junction1_2"],
+    ["junction1_2", "junction1_center"],
+    ["junction1_center", "junction1_2"],
+    ["junction1_2", "agv1_home"],
+
+    ["bench_3", "junction1_3"],
+    ["junction1_3", "junction1_center"],
+    ["junction1_center", "junction1_3"],
+    ["junction1_3", "bench_3"],
+
+    ["bench_1", "junction1_4"],
+    ["bench_2", "junction1_4"],
+    ["junction1_4", "junction1_center"],
+    ["junction1_center", "junction1_4"],
+    ["junction1_4", "bench_1"],
+    ["junction1_4", "bench_2"]
   ],
   "command_overrides": []
 }

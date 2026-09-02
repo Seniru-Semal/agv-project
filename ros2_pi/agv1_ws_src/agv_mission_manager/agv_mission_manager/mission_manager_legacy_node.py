@@ -53,6 +53,7 @@ class MissionManagerNode(Node):
 
         self.nodes: Dict[str, Dict[str, Any]] = {}
         self.connections: List[Tuple[str, str]] = []
+        self.directed_connections: List[Tuple[str, str]] = []
         self.adjacency: Dict[str, List[str]] = {}
         self.command_overrides: Dict[Tuple[str, str, str], str] = {}
 
@@ -228,6 +229,7 @@ class MissionManagerNode(Node):
 
         raw_nodes = graph.get("nodes", {})
         raw_connections = graph.get("connections", [])
+        raw_directed_connections = graph.get("directed_connections", [])
         raw_overrides = graph.get("command_overrides", [])
 
         nodes: Dict[str, Dict[str, Any]] = {}
@@ -262,11 +264,13 @@ class MissionManagerNode(Node):
                 "dead_end": dead_end,
                 "pos": clean_pos,
                 "junction_group": str(node_info.get("junction_group", clean_name)).strip().lower(),
+                "junction_role": str(node_info.get("junction_role", "")).strip().lower(),
             }
 
         connections: List[Tuple[str, str]] = []
+        directed_connections: List[Tuple[str, str]] = []
 
-        if not isinstance(raw_connections, list):
+        if not isinstance(raw_connections, list) or not isinstance(raw_directed_connections, list):
             self.get_logger().warn("Invalid graph connections. Using fallback graph.")
             self.load_fallback_graph()
             return
@@ -288,6 +292,24 @@ class MissionManagerNode(Node):
                 continue
 
             connections.append((a, b))
+
+        for item in raw_directed_connections:
+            if not isinstance(item, list) or len(item) != 2:
+                self.get_logger().warn(f"Ignored invalid directed connection: {item}")
+                continue
+
+            a = str(item[0]).strip().lower()
+            b = str(item[1]).strip().lower()
+
+            if a not in nodes:
+                self.get_logger().warn(f"Ignored directed connection from unknown node: {a}")
+                continue
+
+            if b not in nodes:
+                self.get_logger().warn(f"Ignored directed connection to unknown node: {b}")
+                continue
+
+            directed_connections.append((a, b))
 
         command_overrides: Dict[Tuple[str, str, str], str] = {}
 
@@ -311,13 +333,14 @@ class MissionManagerNode(Node):
 
                 command_overrides[(previous, at, next_node)] = command
 
-        if not nodes or not connections:
+        if not nodes or (not connections and not directed_connections):
             self.get_logger().warn("Graph had no valid nodes/connections. Using fallback.")
             self.load_fallback_graph()
             return
 
         self.nodes = nodes
         self.connections = connections
+        self.directed_connections = directed_connections
         self.command_overrides = command_overrides
         self.build_adjacency()
 
@@ -343,6 +366,7 @@ class MissionManagerNode(Node):
             ("home", "j1"),
             ("j1", "station_a"),
         ]
+        self.directed_connections = []
 
         self.command_overrides = {
             ("home", "j1", "station_a"): "straight",
@@ -356,9 +380,13 @@ class MissionManagerNode(Node):
         for node_name in self.nodes.keys():
             self.adjacency[node_name] = []
 
-        for a, b in self.connections:
-            self.adjacency.setdefault(a, []).append(b)
-            self.adjacency.setdefault(b, []).append(a)
+        if self.directed_connections:
+            for a, b in self.directed_connections:
+                self.adjacency.setdefault(a, []).append(b)
+        else:
+            for a, b in self.connections:
+                self.adjacency.setdefault(a, []).append(b)
+                self.adjacency.setdefault(b, []).append(a)
 
     def normalize_command(self, command: Any) -> str:
         text = str(command).strip().lower()
@@ -524,6 +552,17 @@ class MissionManagerNode(Node):
             next_node = path_nodes[i + 1]
 
             if not self.is_junction(at):
+                continue
+
+            if self.is_junction_exit_transition(previous, at):
+                actions.append(
+                    {
+                        "at": at,
+                        "from": previous,
+                        "to": next_node,
+                        "action": "junction_exit_verification",
+                    }
+                )
                 continue
 
             command = self.compute_junction_command(previous, at, next_node)
@@ -957,7 +996,7 @@ class MissionManagerNode(Node):
 
         next_node = self.path_nodes[self.path_index + 1]
 
-        if self.same_junction_group(previous_node, arrived_node):
+        if self.is_junction_exit_transition(previous_node, arrived_node):
             self.state = "RUNNING_TO_NEXT_NODE"
             self.publish_event(
                 f"MISSION_JUNCTION_EXIT_CONFIRMED_{arrived_node}_TO_{next_node}"
@@ -1061,6 +1100,41 @@ class MissionManagerNode(Node):
         group_b = str(self.nodes.get(node_b, {}).get("junction_group", node_b)).strip().lower()
 
         return bool(group_a and group_a == group_b)
+
+    def junction_role(self, node_name: str) -> str:
+        node_name = node_name.strip().lower()
+        node = self.nodes.get(node_name, {})
+        role = str(node.get("junction_role", "")).strip().lower()
+
+        if role:
+            return role
+
+        if self.is_junction(node_name) and node_name.endswith("_center"):
+            return "center"
+
+        return ""
+
+    def is_junction_center(self, node_name: str) -> bool:
+        return self.is_junction(node_name) and self.junction_role(node_name) in [
+            "center",
+            "decision",
+        ]
+
+    def is_junction_exit(self, node_name: str) -> bool:
+        return self.is_junction(node_name) and self.junction_role(node_name) in [
+            "exit",
+            "verification",
+        ]
+
+    def is_junction_exit_transition(self, previous_node: str, exit_node: str) -> bool:
+        previous_node = previous_node.strip().lower()
+        exit_node = exit_node.strip().lower()
+
+        return (
+            self.is_junction_center(previous_node)
+            and self.is_junction_exit(exit_node)
+            and self.same_junction_group(previous_node, exit_node)
+        )
 
     def is_dead_end_station(self, node_name: str) -> bool:
         node = self.nodes.get(node_name, {})
