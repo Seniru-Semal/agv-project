@@ -349,9 +349,11 @@ class MissionManagerNode(
             separators=(",", ":"),
         )
 
-        self.path_ack_pub.publish(
-            msg
-        )
+        for _ in range(3):
+            self.path_ack_pub.publish(
+                msg
+            )
+            time.sleep(0.02)
 
     # ==================================================
     # Load and validate VM path

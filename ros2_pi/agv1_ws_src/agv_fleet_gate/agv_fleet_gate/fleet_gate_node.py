@@ -106,9 +106,11 @@ class FleetGateNode(
             separators=(",", ":"),
         )
 
-        self.route_ack_pub.publish(
-            msg
-        )
+        for _ in range(3):
+            self.route_ack_pub.publish(
+                msg
+            )
+            time.sleep(0.02)
 
     # ==================================================
     # Revision-aware route loading
