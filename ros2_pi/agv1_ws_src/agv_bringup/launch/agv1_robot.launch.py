@@ -178,6 +178,9 @@ def generate_launch_description():
                         "exit_raw_right_pwm": 30,
 
                         "clear_junction_ignore_distance_mm": 1200.0,
+                        "normal_line_speed": 30,
+                        "junction_line_speed": 22,
+                        "stop_at_junction_command_point": False,
 
                         "event_cooldown_sec": 1.0,
                         "move_timeout_sec": 20.0,
