@@ -98,8 +98,8 @@ def generate_launch_description():
                         "marker_clear_confirm_frames": 2,
                         "classification_timeout_sec": 2.0,
                         "event_cooldown_sec": 0.5,
-                        "ticks_per_mm": 27.25,
-                        "clear_junction_ignore_distance_mm": 300.0,
+                        "ticks_per_mm": 1.064,
+                        "clear_junction_ignore_distance_mm": 1200.0,
                     }
                 ],
             ),
@@ -113,8 +113,8 @@ def generate_launch_description():
                     {
                         "imu_topic": "/agv_1/imu/data_raw",
 
-                        "turn_fast_pwm": 80,
-                        "turn_slow_pwm": 60,
+                        "turn_fast_pwm": 35,
+                        "turn_slow_pwm": 25,
                         "turn_slowdown_angle_deg": 10.0,
                         "turn_tolerance_deg": 2.0,
                         "turn_stop_early_deg": 0.0,
@@ -177,7 +177,7 @@ def generate_launch_description():
                         "exit_raw_left_pwm": 30,
                         "exit_raw_right_pwm": 30,
 
-                        "clear_junction_ignore_distance_mm": 300.0,
+                        "clear_junction_ignore_distance_mm": 1200.0,
 
                         "event_cooldown_sec": 1.0,
                         "move_timeout_sec": 20.0,
@@ -202,7 +202,7 @@ def generate_launch_description():
                 parameters=[
                     {
                         "graph_file": "/home/seniru/agv_ws/src/agv_mission_manager/config/track_graph_fleet.json",
-                        "ticks_per_mm": 27.25,
+                        "ticks_per_mm": 1.064,
                         "reset_feature_action_on_start": True,
                         "start_line_follow_on_start": True,
                         "auto_stop_on_cancel": True,

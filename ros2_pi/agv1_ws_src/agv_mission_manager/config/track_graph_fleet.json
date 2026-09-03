@@ -1,46 +1,57 @@
 {
   "default_current_node": "agv1_home",
-  "station_exit": {
-    "dead_end_turn_deg": 180.0,
-    "raw_drive_mm": 200.0,
-    "raw_left_pwm": 30,
-    "raw_right_pwm": 30,
-    "after_turn_delay_sec": 0.5
-  },
   "nodes": {
     "agv1_home": {
       "type": "station",
-      "pos": [2.75, -3.05],
+      "pos": [
+        2.75,
+        -3.05
+      ],
       "dead_end": false
     },
     "stores": {
       "type": "station",
-      "pos": [3.45, -1.55],
+      "pos": [
+        3.45,
+        -1.55
+      ],
       "dead_end": false
     },
     "bench_1": {
       "type": "station",
-      "pos": [1.05, 1.10],
+      "pos": [
+        1.05,
+        1.1
+      ],
       "dead_end": false
     },
     "bench_2": {
       "type": "station",
-      "pos": [1.05, 2.25],
+      "pos": [
+        1.05,
+        2.25
+      ],
       "dead_end": false
     },
     "bench_3": {
       "type": "station",
-      "pos": [-1.25, 1.35],
+      "pos": [
+        -1.25,
+        1.35
+      ],
       "dead_end": false
     },
     "junction1_1": {
       "type": "junction",
       "junction_group": "junction1",
       "junction_role": "exit",
-      "pos": [2.55, -0.45],
+      "pos": [
+        2.55,
+        -0.45
+      ],
       "approach_offsets_mm": {
         "agv1_home": 850.0,
-        "stores": 850.0,
+        "stores": 450.0,
         "junction1_2": 850.0
       }
     },
@@ -48,80 +59,194 @@
       "type": "junction",
       "junction_group": "junction1",
       "junction_role": "center",
-      "pos": [1.65, -0.45],
+      "pos": [
+        1.65,
+        -0.45
+      ],
       "approach_offsets_mm": {
-        "junction1_1": 800.0,
-        "junction2_2": 550.0
+        "junction1_1": 400.0,
+        "junction2_2": 150.0
       }
     },
     "junction1_2": {
       "type": "junction",
       "junction_group": "junction1",
       "junction_role": "exit",
-      "pos": [1.65, -1.25],
+      "pos": [
+        1.65,
+        -1.25
+      ],
       "approach_offsets_mm": {
-        "agv1_home": 1310.0
+        "agv1_home": 910.0
       }
     },
     "junction2_1": {
       "type": "junction",
       "junction_group": "junction1",
       "junction_role": "exit",
-      "pos": [0.95, 0.20],
+      "pos": [
+        0.95,
+        0.2
+      ],
       "approach_offsets_mm": {
-        "junction1_center": 1250.0
+        "junction1_center": 850.0
       }
     },
     "junction2_2": {
       "type": "junction",
       "junction_group": "junction1",
       "junction_role": "exit",
-      "pos": [0.35, -0.45],
+      "pos": [
+        0.35,
+        -0.45
+      ],
       "approach_offsets_mm": {
-        "bench_1": 500.0,
-        "bench_2": 500.0,
-        "bench_3": 500.0,
+        "bench_1": 100.0,
+        "bench_2": 100.0,
+        "bench_3": 100.0,
         "junction2_1": 500.0
       }
     }
   },
   "connections": [
-    ["agv1_home", "stores"],
-    ["agv1_home", "junction1_1"],
-    ["stores", "junction1_1"],
-    ["junction1_1", "junction1_center"],
-    ["junction1_center", "junction2_1"],
-    ["junction2_1", "bench_1"],
-    ["junction2_1", "bench_2"],
-    ["junction2_1", "bench_3"],
-    ["junction2_1", "junction2_2"],
-    ["bench_1", "junction2_2"],
-    ["bench_2", "junction2_2"],
-    ["bench_3", "junction2_2"],
-    ["junction2_2", "junction1_center"],
-    ["junction1_center", "junction1_2"],
-    ["junction1_2", "agv1_home"],
-    ["junction1_2", "stores"],
-    ["junction1_2", "junction1_1"]
+    [
+      "agv1_home",
+      "stores"
+    ],
+    [
+      "agv1_home",
+      "junction1_1"
+    ],
+    [
+      "stores",
+      "junction1_1"
+    ],
+    [
+      "junction1_1",
+      "junction1_center"
+    ],
+    [
+      "junction1_center",
+      "junction2_1"
+    ],
+    [
+      "junction2_1",
+      "bench_1"
+    ],
+    [
+      "junction2_1",
+      "bench_2"
+    ],
+    [
+      "junction2_1",
+      "bench_3"
+    ],
+    [
+      "junction2_1",
+      "junction2_2"
+    ],
+    [
+      "bench_1",
+      "junction2_2"
+    ],
+    [
+      "bench_2",
+      "junction2_2"
+    ],
+    [
+      "bench_3",
+      "junction2_2"
+    ],
+    [
+      "junction2_2",
+      "junction1_center"
+    ],
+    [
+      "junction1_center",
+      "junction1_2"
+    ],
+    [
+      "junction1_2",
+      "agv1_home"
+    ],
+    [
+      "junction1_2",
+      "stores"
+    ],
+    [
+      "junction1_2",
+      "junction1_1"
+    ]
   ],
   "directed_connections": [
-    ["agv1_home", "stores"],
-    ["agv1_home", "junction1_1"],
-    ["stores", "junction1_1"],
-    ["junction1_1", "junction1_center"],
-    ["junction1_center", "junction2_1"],
-    ["junction2_1", "bench_1"],
-    ["junction2_1", "bench_2"],
-    ["junction2_1", "bench_3"],
-    ["junction2_1", "junction2_2"],
-    ["bench_1", "junction2_2"],
-    ["bench_2", "junction2_2"],
-    ["bench_3", "junction2_2"],
-    ["junction2_2", "junction1_center"],
-    ["junction1_center", "junction1_2"],
-    ["junction1_2", "agv1_home"],
-    ["junction1_2", "stores"],
-    ["junction1_2", "junction1_1"]
+    [
+      "agv1_home",
+      "stores"
+    ],
+    [
+      "agv1_home",
+      "junction1_1"
+    ],
+    [
+      "stores",
+      "junction1_1"
+    ],
+    [
+      "junction1_1",
+      "junction1_center"
+    ],
+    [
+      "junction1_center",
+      "junction2_1"
+    ],
+    [
+      "junction2_1",
+      "bench_1"
+    ],
+    [
+      "junction2_1",
+      "bench_2"
+    ],
+    [
+      "junction2_1",
+      "bench_3"
+    ],
+    [
+      "junction2_1",
+      "junction2_2"
+    ],
+    [
+      "bench_1",
+      "junction2_2"
+    ],
+    [
+      "bench_2",
+      "junction2_2"
+    ],
+    [
+      "bench_3",
+      "junction2_2"
+    ],
+    [
+      "junction2_2",
+      "junction1_center"
+    ],
+    [
+      "junction1_center",
+      "junction1_2"
+    ],
+    [
+      "junction1_2",
+      "agv1_home"
+    ],
+    [
+      "junction1_2",
+      "stores"
+    ],
+    [
+      "junction1_2",
+      "junction1_1"
+    ]
   ],
   "command_overrides": [
     {

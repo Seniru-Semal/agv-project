@@ -27,6 +27,16 @@ RETURNING_TO_CHARGER = "RETURNING_TO_CHARGER"
 COMPLETE = "COMPLETE"
 FAULTED = "FAULTED"
 
+ACTIVE_TASK_STATES = {
+    REQUESTED,
+    ASSIGNED,
+    GOING_TO_STORES,
+    WAITING_FOR_LOAD,
+    GOING_TO_WORKBENCH,
+    WAITING_FOR_RECEIVE,
+    RETURNING_TO_CHARGER,
+}
+
 
 @dataclass
 class DeliveryTask:
@@ -169,6 +179,22 @@ class DeliveryManagerNode(Node):
         if text.startswith("DISPATCH_REJECTED"):
             self.publish_event(f"FLEET_{text}")
 
+    def active_task_for_workbench(self, workbench: str) -> Optional[DeliveryTask]:
+        candidates = [
+            task
+            for task in self.tasks.values()
+            if task.workbench == workbench and task.state in ACTIVE_TASK_STATES
+        ]
+        candidates.sort(key=lambda task: task.created_at)
+        return candidates[0] if candidates else None
+
+    def active_task_robot_names(self) -> set[str]:
+        return {
+            task.robot
+            for task in self.tasks.values()
+            if task.robot and task.state in ACTIVE_TASK_STATES
+        }
+
     def request_delivery_callback(self, msg: String) -> None:
         payload = self.parse_json(msg.data)
         if payload is None:
@@ -182,6 +208,14 @@ class DeliveryManagerNode(Node):
 
         if self.workbenches and workbench not in self.workbenches:
             self.publish_event(f"REQUEST_REJECTED unknown_workbench={workbench}")
+            return
+
+        active_task = self.active_task_for_workbench(workbench)
+        if active_task is not None:
+            self.publish_event(
+                "REQUEST_REJECTED active_task_for_workbench="
+                f"{workbench} task={active_task.task_id} state={active_task.state}"
+            )
             return
 
         item = str(payload.get("item", "default_item")).strip() or "default_item"
@@ -433,8 +467,13 @@ class DeliveryManagerNode(Node):
         if not isinstance(robots, dict):
             return ""
 
+        reserved_robots = self.active_task_robot_names()
+
         candidates = []
         for robot_name, data in robots.items():
+            if str(robot_name) in reserved_robots:
+                continue
+
             if not isinstance(data, dict):
                 continue
 

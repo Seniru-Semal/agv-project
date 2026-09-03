@@ -183,6 +183,21 @@ class WorkbenchWindow(QMainWindow):
         self.update_timer.start(250)
 
     def request_delivery(self) -> None:
+        active = [
+            task
+            for task in self.workbench_tasks()
+            if task.get("state") not in ("COMPLETE", "FAULTED")
+        ]
+
+        if active:
+            QMessageBox.warning(
+                self,
+                "Active task already exists",
+                "This workbench already has an active delivery task. "
+                "Confirm or cancel it before requesting another item.",
+            )
+            return
+
         item = self.item_edit.text().strip() or "default_item"
         self.ros_node.request_delivery(
             self.workbench_id,
@@ -269,6 +284,11 @@ class WorkbenchWindow(QMainWindow):
             for task in rows
             if task.get("state") not in ("COMPLETE", "FAULTED")
         ]
+
+        can_request = not active
+        self.request_button.setEnabled(can_request)
+        self.item_edit.setEnabled(can_request)
+        self.priority_spin.setEnabled(can_request)
 
         self.receive_button.setEnabled(ready)
         self.receive_button.setProperty("ready", "true" if ready else "false")
