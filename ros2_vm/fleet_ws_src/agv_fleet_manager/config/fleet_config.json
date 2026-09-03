@@ -3,122 +3,120 @@
   "lookahead_edges": 2,
   "controlled_retreat_delay_seconds": 2.0,
   "allow_idle_egress_borrowing": true,
-
   "robots": {
     "agv_1": {
       "initial_node": "agv1_home",
       "priority": 20
     }
   },
-
   "nodes": {
     "agv1_home": {
       "type": "home",
-      "pos": [1.3, -3.0],
+      "pos": [2.75, -3.05],
       "holding_allowed": true,
       "persistent_occupancy": true,
-      "egress_nodes": ["junction1_2"]
+      "egress_nodes": ["stores", "junction1_1"]
     },
     "stores": {
       "type": "station",
-      "pos": [3.2, -1.1],
+      "pos": [3.45, -1.55],
       "holding_allowed": true,
       "persistent_occupancy": true,
       "egress_nodes": ["junction1_1"]
     },
     "bench_1": {
       "type": "station",
-      "pos": [0.6, 2.1],
+      "pos": [1.05, 1.10],
       "holding_allowed": true,
       "persistent_occupancy": true,
-      "egress_nodes": ["junction1_4"]
+      "egress_nodes": ["junction2_2"]
     },
     "bench_2": {
       "type": "station",
-      "pos": [0.6, 3.1],
+      "pos": [1.05, 2.25],
       "holding_allowed": true,
       "persistent_occupancy": true,
-      "egress_nodes": ["junction1_4"]
+      "egress_nodes": ["junction2_2"]
     },
     "bench_3": {
       "type": "station",
-      "pos": [-1.5, 1.4],
+      "pos": [-1.25, 1.35],
       "holding_allowed": true,
       "persistent_occupancy": true,
-      "egress_nodes": ["junction1_3"]
-    },
-
-    "junction1_center": {
-      "type": "junction",
-      "junction_group": "junction1",
-      "junction_role": "center",
-      "pos": [1.0, 0.0],
-      "holding_allowed": false
+      "egress_nodes": ["junction2_2"]
     },
     "junction1_1": {
       "type": "junction",
       "junction_group": "junction1",
       "junction_role": "exit",
-      "pos": [2.0, 0.0],
+      "pos": [2.55, -0.45],
+      "holding_allowed": false
+    },
+    "junction1_center": {
+      "type": "junction",
+      "junction_group": "junction1",
+      "junction_role": "center",
+      "pos": [1.65, -0.45],
       "holding_allowed": false
     },
     "junction1_2": {
       "type": "junction",
       "junction_group": "junction1",
       "junction_role": "exit",
-      "pos": [1.3, -1.0],
+      "pos": [1.65, -1.25],
       "holding_allowed": false
     },
-    "junction1_3": {
+    "junction2_1": {
       "type": "junction",
       "junction_group": "junction1",
       "junction_role": "exit",
-      "pos": [0.0, 0.0],
+      "pos": [0.95, 0.20],
       "holding_allowed": false
     },
-    "junction1_4": {
+    "junction2_2": {
       "type": "junction",
       "junction_group": "junction1",
       "junction_role": "exit",
-      "pos": [0.6, 1.1],
+      "pos": [0.35, -0.45],
       "holding_allowed": false
     }
   },
-
   "connections": [
-    ["agv1_home", "junction1_2"],
-    ["stores", "junction1_1"],
-    ["bench_1", "junction1_4"],
-    ["bench_2", "junction1_4"],
-    ["bench_3", "junction1_3"],
-
-    ["junction1_center", "junction1_1"],
-    ["junction1_center", "junction1_2"],
-    ["junction1_center", "junction1_3"],
-    ["junction1_center", "junction1_4"]
-  ],
-
-  "directed_connections": [
+    ["agv1_home", "stores"],
+    ["agv1_home", "junction1_1"],
     ["stores", "junction1_1"],
     ["junction1_1", "junction1_center"],
-    ["junction1_center", "junction1_1"],
-    ["junction1_1", "stores"],
-
-    ["agv1_home", "junction1_2"],
-    ["junction1_2", "junction1_center"],
+    ["junction1_center", "junction2_1"],
+    ["junction2_1", "bench_1"],
+    ["junction2_1", "bench_2"],
+    ["junction2_1", "bench_3"],
+    ["junction2_1", "junction2_2"],
+    ["bench_1", "junction2_2"],
+    ["bench_2", "junction2_2"],
+    ["bench_3", "junction2_2"],
+    ["junction2_2", "junction1_center"],
     ["junction1_center", "junction1_2"],
     ["junction1_2", "agv1_home"],
-
-    ["bench_3", "junction1_3"],
-    ["junction1_3", "junction1_center"],
-    ["junction1_center", "junction1_3"],
-    ["junction1_3", "bench_3"],
-
-    ["bench_1", "junction1_4"],
-    ["bench_2", "junction1_4"],
-    ["junction1_4", "junction1_center"],
-    ["junction1_center", "junction1_4"],
-    ["junction1_4", "bench_1"],
-    ["junction1_4", "bench_2"]
+    ["junction1_2", "stores"],
+    ["junction1_2", "junction1_1"]
+  ],
+  "directed_connections": [
+    ["agv1_home", "stores"],
+    ["agv1_home", "junction1_1"],
+    ["stores", "junction1_1"],
+    ["junction1_1", "junction1_center"],
+    ["junction1_center", "junction2_1"],
+    ["junction2_1", "bench_1"],
+    ["junction2_1", "bench_2"],
+    ["junction2_1", "bench_3"],
+    ["junction2_1", "junction2_2"],
+    ["bench_1", "junction2_2"],
+    ["bench_2", "junction2_2"],
+    ["bench_3", "junction2_2"],
+    ["junction2_2", "junction1_center"],
+    ["junction1_center", "junction1_2"],
+    ["junction1_2", "agv1_home"],
+    ["junction1_2", "stores"],
+    ["junction1_2", "junction1_1"]
   ]
 }

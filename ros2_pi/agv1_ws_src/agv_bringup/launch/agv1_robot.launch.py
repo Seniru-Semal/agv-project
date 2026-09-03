@@ -171,11 +171,11 @@ def generate_launch_description():
                         "junction_center_offset_mm": 190.0,
                         "station_stop_offset_mm": 200.0,
 
-                        "approach_raw_left_pwm": 120,
-                        "approach_raw_right_pwm": 120,
+                        "approach_raw_left_pwm": 30,
+                        "approach_raw_right_pwm": 30,
 
-                        "exit_raw_left_pwm": 120,
-                        "exit_raw_right_pwm": 120,
+                        "exit_raw_left_pwm": 30,
+                        "exit_raw_right_pwm": 30,
 
                         "clear_junction_ignore_distance_mm": 300.0,
 

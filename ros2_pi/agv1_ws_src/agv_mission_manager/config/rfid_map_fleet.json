@@ -1,8 +1,8 @@
 {
   "0A:26:59:16": "junction1_1",
   "AA:75:57:16": "junction1_2",
-  "0A:90:5E:16": "junction1_3",
-  "BA:1F:60:16": "junction1_4",
+  "0A:90:5E:16": "junction2_1",
+  "BA:1F:60:16": "junction2_2",
   "EA:F2:43:16": "junction1_center",
 
   "DA:43:6D:16": "stores",
