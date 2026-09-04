@@ -853,7 +853,9 @@ class MissionManagerNode(Node):
         self.publish_state()
 
         if self.start_line_follow_on_start:
-            self.publish_start()
+            self.send_raw_command("C:CLEAR_BRANCH")
+            time.sleep(0.02)
+            self.send_raw_start()
 
     def cancel_mission_callback(self, msg: Bool):
         if not msg.data:

@@ -820,8 +820,6 @@ class FeatureActionNode(Node):
         if not msg.data:
             return
 
-        self.stop_robot()
-        self.send_branch_command("AUTO")
 
         self.state = "NORMAL"
         self.pending_turn_command = "NONE"
@@ -902,9 +900,6 @@ class FeatureActionNode(Node):
 
         if self.stop_at_junction_command_point or not was_line_follow:
             self.stop_robot()
-        else:
-            self.apply_junction_line_speed()
-            self.send_raw_start()
 
 
         self.state = "WAITING_FOR_JUNCTION_COMMAND"
@@ -955,7 +950,6 @@ class FeatureActionNode(Node):
     def command_straight_exit(self):
         self.pending_turn_command = "STRAIGHT"
 
-        self.apply_junction_line_speed()
         self.send_branch_command("STRAIGHT")
         self.start_junction_clearing_with_line_follow()
         self.publish_event("EXITING_JUNCTION_STRAIGHT_LINE_FOLLOW")
@@ -965,7 +959,6 @@ class FeatureActionNode(Node):
     def command_smooth_arc_exit(self, name: str):
         self.pending_turn_command = name
 
-        self.apply_junction_line_speed()
         self.send_branch_command(name)
         self.start_junction_clearing_with_line_follow()
         self.publish_event(f"EXITING_JUNCTION_{name}_ARC_LINE_FOLLOW")
@@ -1030,8 +1023,9 @@ class FeatureActionNode(Node):
 
         self.publish_junction_reached(False)
 
-        self.apply_junction_line_speed()
-        self.send_raw_start()
+        if self.stop_at_junction_command_point:
+            self.apply_junction_line_speed()
+            self.send_raw_start()
 
     def update_motion_state(self):
         if self.state == "MOVING_TO_JUNCTION_CENTER":
