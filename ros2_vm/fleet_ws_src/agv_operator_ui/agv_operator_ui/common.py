@@ -43,6 +43,26 @@ class OperatorRosNode(Node):
             "/delivery/cancel_task",
             10,
         )
+        self.fleet_resume_pub = self.create_publisher(
+            String,
+            "/fleet/resume",
+            10,
+        )
+        self.fleet_reset_pub = self.create_publisher(
+            String,
+            "/fleet/reset",
+            10,
+        )
+        self.fleet_clear_pub = self.create_publisher(
+            String,
+            "/fleet/clear_reservations",
+            10,
+        )
+        self.fleet_set_node_pub = self.create_publisher(
+            String,
+            "/fleet/set_current_node",
+            10,
+        )
 
         self.create_subscription(String, "/delivery/state", self.delivery_state_cb, 10)
         self.create_subscription(String, "/delivery/tasks", self.delivery_tasks_cb, 10)
@@ -129,6 +149,30 @@ class OperatorRosNode(Node):
 
     def cancel_task(self, task_id: str) -> None:
         self.publish_json(self.cancel_pub, {"task_id": task_id})
+
+    def resume_robot(self, robot: str) -> None:
+        self.publish_json(self.fleet_resume_pub, {"robot": robot})
+
+    def reset_robot(self, robot: str) -> None:
+        self.publish_json(self.fleet_reset_pub, {"robot": robot})
+
+    def set_robot_current_node(self, robot: str, node: str) -> None:
+        self.publish_json(
+            self.fleet_set_node_pub,
+            {
+                "robot": robot,
+                "node": node,
+            },
+        )
+
+    def clear_robot_reservations(self, robot: str, confirmed_node: str) -> None:
+        self.publish_json(
+            self.fleet_clear_pub,
+            {
+                "robot": robot,
+                "confirmed_node": confirmed_node,
+            },
+        )
 
 
 def make_spin_timer(node: Node, interval_ms: int = 30) -> QTimer:
