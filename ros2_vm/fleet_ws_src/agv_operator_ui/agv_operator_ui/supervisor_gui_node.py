@@ -30,6 +30,7 @@ from .common import (
     set_table_rows,
     table_selected_row_payload,
 )
+from .floor_map_widget import FloorMapWidget
 
 
 TASK_COLUMNS = [
@@ -142,6 +143,12 @@ class SupervisorWindow(QMainWindow):
         robot_layout.addWidget(self.robot_table)
         right_layout.addWidget(robot_box)
 
+        map_box = QGroupBox("Map")
+        map_layout = QVBoxLayout(map_box)
+        self.map_widget = FloorMapWidget()
+        map_layout.addWidget(self.map_widget)
+        right_layout.addWidget(map_box, 2)
+
         self.recovery_toggle = QPushButton("Show Recovery")
         self.recovery_toggle.setCheckable(True)
         self.recovery_toggle.toggled.connect(self.set_recovery_visible)
@@ -201,7 +208,7 @@ class SupervisorWindow(QMainWindow):
         self.event_log = QTextEdit()
         self.event_log.setReadOnly(True)
         event_layout.addWidget(self.event_log)
-        right_layout.addWidget(event_box)
+        right_layout.addWidget(event_box, 1)
 
         splitter.addWidget(task_box)
         splitter.addWidget(right_panel)
@@ -367,6 +374,7 @@ class SupervisorWindow(QMainWindow):
 
         set_table_rows(self.robot_table, ROBOT_COLUMNS, robot_rows)
         self.update_recovery_selectors(robot_rows)
+        self.map_widget.set_fleet_state(self.ros_node.fleet_state)
 
         active_count = len(
             [
