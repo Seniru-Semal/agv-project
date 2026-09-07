@@ -127,6 +127,8 @@ class FeatureActionNode(Node):
         self.mission_active = False
         self.manual_enable = False
         self.ignore_station_until_junction = False
+        self.safety_hold_active = False
+        self.safety_hold_started_at = 0.0
 
         self.latest_left_ticks: Optional[int] = None
         self.latest_right_ticks: Optional[int] = None
@@ -209,6 +211,9 @@ class FeatureActionNode(Node):
         )
         self.create_subscription(
             Bool, "/agv_1/mission/active", self.mission_active_callback, 10
+        )
+        self.create_subscription(
+            Bool, "/agv_1/safety_hold/active", self.safety_hold_callback, 10
         )
         self.create_subscription(
             Bool, "/agv_1/feature_action/cmd/enable", self.manual_enable_callback, 10
@@ -437,6 +442,21 @@ class FeatureActionNode(Node):
 
     def mission_active_callback(self, msg: Bool):
         self.mission_active = bool(msg.data)
+
+    def safety_hold_callback(self, msg: Bool):
+        active = bool(msg.data)
+        now = time.time()
+
+        if active and not self.safety_hold_active:
+            self.safety_hold_started_at = now
+
+        elif not active and self.safety_hold_active:
+            if self.safety_hold_started_at > 0.0 and self.move_start_time > 0.0:
+                self.move_start_time += now - self.safety_hold_started_at
+
+            self.safety_hold_started_at = 0.0
+
+        self.safety_hold_active = active
 
     def manual_enable_callback(self, msg: Bool):
         self.manual_enable = bool(msg.data)
@@ -1094,6 +1114,9 @@ class FeatureActionNode(Node):
             "CLEARING_JUNCTION",
             "TURNING_AT_JUNCTION",
         ]:
+            return
+
+        if self.safety_hold_active:
             return
 
         if self.move_start_time <= 0.0:

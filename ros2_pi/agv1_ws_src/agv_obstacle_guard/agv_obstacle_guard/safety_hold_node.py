@@ -407,7 +407,13 @@ class SafetyHoldNode(Node):
                 ),
             )
 
-        if self.held_feature_state != "NORMAL":
+        resumable_feature_states = {
+            "NORMAL",
+            "MOVING_TO_JUNCTION_CENTER",
+            "CLEARING_JUNCTION",
+        }
+
+        if self.held_feature_state not in resumable_feature_states:
             return (
                 False,
                 (
@@ -437,10 +443,16 @@ class SafetyHoldNode(Node):
                 "CURRENT_MISSION_STATE_CHANGED",
             )
 
-        if self.feature_state != "NORMAL":
+        if self.feature_state not in resumable_feature_states:
             return (
                 False,
                 "CURRENT_FEATURE_STATE_CHANGED",
+            )
+
+        if self.feature_state != self.held_feature_state:
+            return (
+                False,
+                "FEATURE_STATE_CHANGED_DURING_HOLD",
             )
 
         if self.turn_state not in {
