@@ -44,7 +44,10 @@ def generate_launch_description():
                 executable="arduino_bridge_node",
                 name="arduino_bridge_node",
                 output="screen",
-                parameters=[
+                emulate_tty=True,
+		respawn=True,
+		respawn_delay=2.0,
+		parameters=[
                     {
                         "port": arduino_port,
                         "baud": arduino_baud,
@@ -57,7 +60,7 @@ def generate_launch_description():
                 executable="safety_manager_node",
                 name="safety_manager_node",
                 output="screen",
-                parameters=[
+                 parameters=[
                     {
                         "status_timeout_sec": 1.0,
                         "hard_timeout_sec": 3.0,
@@ -73,7 +76,7 @@ def generate_launch_description():
                 executable="bmi160_imu_node",
                 name="bmi160_imu_node",
                 output="screen",
-                parameters=[
+                 parameters=[
                     {
                         "i2c_bus": imu_i2c_bus,
                         "i2c_address": imu_address,
@@ -90,7 +93,7 @@ def generate_launch_description():
                 executable="feature_classifier_node",
                 name="feature_classifier_node",
                 output="screen",
-                parameters=[
+                 parameters=[
                     {
                         "station_wide_confirm_frames": 12,
                         "station_solid_confirm_frames": 5,
@@ -109,7 +112,7 @@ def generate_launch_description():
                 executable="turn_manager_node",
                 name="turn_manager_node",
                 output="screen",
-                parameters=[
+                 parameters=[
                     {
                         "imu_topic": "/agv_1/imu/data_raw",
 
@@ -144,7 +147,7 @@ def generate_launch_description():
                 executable="rfid_reader_node",
                 name="rfid_reader_node",
                 output="screen",
-                parameters=[
+                 parameters=[
                     {
                         "robot_ns": "agv_1",
                         "rfid_map_path": "/home/seniru/agv_ws/src/agv_mission_manager/config/rfid_map_fleet.json",
@@ -160,7 +163,7 @@ def generate_launch_description():
                 executable="feature_action_node",
                 name="feature_action_node",
                 output="screen",
-                parameters=[
+                 parameters=[
                     {
                         "graph_file": "/home/seniru/agv_ws/src/agv_mission_manager/config/track_graph_fleet.json",
 
@@ -199,7 +202,7 @@ def generate_launch_description():
                 executable="mission_manager_node",
                 name="mission_manager_node",
                 output="screen",
-                parameters=[
+                 parameters=[
                     {
                         "graph_file": "/home/seniru/agv_ws/src/agv_mission_manager/config/track_graph_fleet.json",
                         "ticks_per_mm": 27.25,

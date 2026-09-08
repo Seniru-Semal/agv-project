@@ -23,9 +23,9 @@ def generate_launch_description():
                 "stop_half_angle_deg": 90.0,
                 "warn_half_angle_deg": 90.0,
 
-                "stop_distance_mm": 200.0,
-                "warn_distance_mm": 300.0,
-                "clear_distance_mm": 250.0,
+                "stop_distance_mm": 400.0,
+                "warn_distance_mm": 600.0,
+                "clear_distance_mm": 450.0,
 
                 "scan_timeout_sec": 0.5,
                 "stop_repeat_sec": 0.2,
