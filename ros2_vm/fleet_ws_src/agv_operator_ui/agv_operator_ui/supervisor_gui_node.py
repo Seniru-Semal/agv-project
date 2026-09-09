@@ -188,6 +188,8 @@ class SupervisorWindow(QMainWindow):
         recovery_buttons = QHBoxLayout()
         resume_button = QPushButton("Resume Hold")
         resume_button.clicked.connect(self.resume_robot)
+        line_resume_button = QPushButton("Resume Line")
+        line_resume_button.clicked.connect(self.resume_line_mission)
         set_node_button = QPushButton("Set Node")
         set_node_button.clicked.connect(self.set_robot_node)
         clear_button = QPushButton("Clear Reservations")
@@ -196,6 +198,7 @@ class SupervisorWindow(QMainWindow):
         reset_button.clicked.connect(self.reset_robot)
 
         recovery_buttons.addWidget(resume_button)
+        recovery_buttons.addWidget(line_resume_button)
         recovery_buttons.addWidget(set_node_button)
         recovery_buttons.addWidget(clear_button)
         recovery_buttons.addWidget(reset_button)
@@ -255,6 +258,33 @@ class SupervisorWindow(QMainWindow):
         robot = self.selected_recovery_robot()
         if robot:
             self.ros_node.resume_robot(robot)
+
+    def resume_line_mission(self) -> None:
+        robot = self.selected_recovery_robot()
+        if not robot:
+            return
+
+        result = QMessageBox.question(
+            self,
+            "Resume line mission",
+            (
+                f"Use this only after {robot} stopped from line loss and has "
+                "been manually realigned at the same point on the same route.\n\n"
+                "This sends Arduino RESET, then START. The current mission and "
+                "fleet reservations are kept unchanged."
+            ),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+
+        if result == QMessageBox.Yes:
+            self.ros_node.reset_low_level_robot(robot)
+            QTimer.singleShot(
+                250,
+                lambda selected_robot=robot: self.ros_node.start_low_level_robot(
+                    selected_robot
+                ),
+            )
 
     def set_robot_node(self) -> None:
         robot = self.selected_recovery_robot()

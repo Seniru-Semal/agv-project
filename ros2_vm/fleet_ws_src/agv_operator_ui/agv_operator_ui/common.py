@@ -10,7 +10,7 @@ from PyQt5.QtWidgets import QTableWidget, QTableWidgetItem
 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 
 
 class OperatorRosNode(Node):
@@ -63,6 +63,16 @@ class OperatorRosNode(Node):
             "/fleet/set_current_node",
             10,
         )
+        self.low_level_reset_pub = self.create_publisher(
+            Bool,
+            "/agv_1/cmd/reset",
+            10,
+        )
+        self.low_level_start_pub = self.create_publisher(
+            Bool,
+            "/agv_1/cmd/start",
+            10,
+        )
 
         self.create_subscription(String, "/delivery/state", self.delivery_state_cb, 10)
         self.create_subscription(String, "/delivery/tasks", self.delivery_tasks_cb, 10)
@@ -81,6 +91,12 @@ class OperatorRosNode(Node):
     def publish_json(publisher: Any, payload: Dict[str, Any]) -> None:
         msg = String()
         msg.data = json.dumps(payload, separators=(",", ":"))
+        publisher.publish(msg)
+
+    @staticmethod
+    def publish_bool(publisher: Any, value: bool = True) -> None:
+        msg = Bool()
+        msg.data = bool(value)
         publisher.publish(msg)
 
     def delivery_state_cb(self, msg: String) -> None:
@@ -155,6 +171,14 @@ class OperatorRosNode(Node):
 
     def reset_robot(self, robot: str) -> None:
         self.publish_json(self.fleet_reset_pub, {"robot": robot})
+
+    def reset_low_level_robot(self, robot: str) -> None:
+        if robot.strip() == "agv_1":
+            self.publish_bool(self.low_level_reset_pub)
+
+    def start_low_level_robot(self, robot: str) -> None:
+        if robot.strip() == "agv_1":
+            self.publish_bool(self.low_level_start_pub)
 
     def set_robot_current_node(self, robot: str, node: str) -> None:
         self.publish_json(
