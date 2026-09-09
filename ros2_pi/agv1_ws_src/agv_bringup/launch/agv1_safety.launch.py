@@ -71,6 +71,8 @@ def generate_launch_description():
                 "clear_stable_sec": 2.0,
                 "stop_repeat_sec": 0.25,
                 "auto_clear_when_mission_inactive": True,
+                "local_auto_resume_enabled": True,
+                "local_auto_resume_retry_sec": 1.0,
             }
         ],
     )

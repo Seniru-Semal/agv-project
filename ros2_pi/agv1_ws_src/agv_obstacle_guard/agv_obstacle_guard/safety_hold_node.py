@@ -38,6 +38,16 @@ class SafetyHoldNode(Node):
             True,
         )
 
+        self.declare_parameter(
+            "local_auto_resume_enabled",
+            True,
+        )
+
+        self.declare_parameter(
+            "local_auto_resume_retry_sec",
+            1.0,
+        )
+
         self.robot_ns = str(
             self.get_parameter(
                 "robot_ns"
@@ -62,6 +72,18 @@ class SafetyHoldNode(Node):
             ).value
         )
 
+        self.local_auto_resume_enabled = bool(
+            self.get_parameter(
+                "local_auto_resume_enabled"
+            ).value
+        )
+
+        self.local_auto_resume_retry_sec = float(
+            self.get_parameter(
+                "local_auto_resume_retry_sec"
+            ).value
+        )
+
         self.obstacle_state = "UNKNOWN"
 
         self.mission_active = False
@@ -82,6 +104,7 @@ class SafetyHoldNode(Node):
         self.clear_since = None
         self.last_stop_publish_time = 0.0
         self.last_status_publish_time = 0.0
+        self.last_auto_resume_time = 0.0
 
         status_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
@@ -486,14 +509,18 @@ class SafetyHoldNode(Node):
             self.get_logger().warn(event)
             return
 
+        self.accept_resume(
+            "RESUME_ACCEPTED_LINE_FOLLOW"
+        )
+
+    def accept_resume(self, event):
         self.hold_active = False
         self.hold_reason = "NONE"
 
         self.publish_start()
 
-        self.publish_event(
-            "RESUME_ACCEPTED_LINE_FOLLOW"
-        )
+        self.publish_event(event)
+        self.get_logger().info(event)
 
         self.clear_held_states()
         self.publish_status(force=True)
@@ -610,8 +637,6 @@ class SafetyHoldNode(Node):
 
     def timer_callback(self):
         if self.hold_active:
-            self.publish_stop()
-
             if (
                 self.auto_clear_when_mission_inactive
                 and not self.mission_active
@@ -623,6 +648,25 @@ class SafetyHoldNode(Node):
                     "AUTO_CLEAR_MISSION_INACTIVE"
                 )
                 return
+
+            if self.local_auto_resume_enabled:
+                allowed, _ = self.resume_allowed()
+
+                if allowed:
+                    now = time.monotonic()
+
+                    if (
+                        now
+                        - self.last_auto_resume_time
+                        >= self.local_auto_resume_retry_sec
+                    ):
+                        self.last_auto_resume_time = now
+                        self.accept_resume(
+                            "AUTO_RESUME_ACCEPTED_LINE_FOLLOW"
+                        )
+                        return
+
+            self.publish_stop()
 
         self.publish_status()
 
