@@ -65,7 +65,11 @@ class DeliveryManagerNode(Node):
         )
 
         self.declare_parameter("config_file", default_config)
-        self.declare_parameter("dispatch_retry_sec", 3.0)
+        self.declare_parameter("dispatch_retry_sec", 8.0)
+        self.declare_parameter("delivery_state_publish_period_sec", 1.0)
+        self.declare_parameter("publish_delivery_tasks_topic", False)
+        self.declare_parameter("state_event_history_limit", 0)
+        self.declare_parameter("fleet_state_stale_sec", 2.5)
 
         self.config_file = os.path.expanduser(
             str(self.get_parameter("config_file").value)
@@ -73,6 +77,21 @@ class DeliveryManagerNode(Node):
         self.dispatch_retry_sec = max(
             1.0,
             float(self.get_parameter("dispatch_retry_sec").value),
+        )
+        self.delivery_state_publish_period_sec = max(
+            0.5,
+            float(self.get_parameter("delivery_state_publish_period_sec").value),
+        )
+        self.publish_delivery_tasks_topic = bool(
+            self.get_parameter("publish_delivery_tasks_topic").value
+        )
+        self.state_event_history_limit = max(
+            0,
+            int(self.get_parameter("state_event_history_limit").value),
+        )
+        self.fleet_state_stale_sec = max(
+            1.0,
+            float(self.get_parameter("fleet_state_stale_sec").value),
         )
 
         self.config = self.load_config(self.config_file)
@@ -92,6 +111,7 @@ class DeliveryManagerNode(Node):
         self.tasks: Dict[str, DeliveryTask] = {}
         self.events: List[str] = []
         self.fleet_state: Dict[str, Any] = {}
+        self.last_fleet_state_at = 0.0
         self.last_dispatch_at: Dict[str, float] = {}
 
         self.dispatch_pub = self.create_publisher(String, "/fleet/dispatch", 10)
@@ -127,7 +147,7 @@ class DeliveryManagerNode(Node):
         self.create_subscription(String, "/fleet/state", self.fleet_state_callback, 10)
         self.create_subscription(String, "/fleet/event", self.fleet_event_callback, 20)
 
-        self.create_timer(0.5, self.timer_callback)
+        self.create_timer(self.delivery_state_publish_period_sec, self.timer_callback)
 
         self.publish_event(
             "DELIVERY_MANAGER_STARTED "
@@ -173,6 +193,7 @@ class DeliveryManagerNode(Node):
         value = self.parse_json(msg.data)
         if value is not None:
             self.fleet_state = value
+            self.last_fleet_state_at = time.time()
 
     def fleet_event_callback(self, msg: String) -> None:
         text = msg.data.strip()
@@ -453,6 +474,9 @@ class DeliveryManagerNode(Node):
         if time.time() - last_sent < self.dispatch_retry_sec:
             return
 
+        if time.time() - self.last_fleet_state_at > self.fleet_state_stale_sec:
+            return
+
         robot = self.robot_data(task.robot)
         if not robot:
             return
@@ -524,12 +548,16 @@ class DeliveryManagerNode(Node):
             "workbenches": self.workbenches,
             "home_nodes": self.home_nodes,
             "tasks": tasks,
-            "events": self.events[-100:],
+            "event_count": len(self.events),
         }
 
-        msg = String()
-        msg.data = json.dumps(tasks, separators=(",", ":"))
-        self.tasks_pub.publish(msg)
+        if self.state_event_history_limit > 0:
+            state["events"] = self.events[-self.state_event_history_limit:]
+
+        if self.publish_delivery_tasks_topic:
+            msg = String()
+            msg.data = json.dumps(tasks, separators=(",", ":"))
+            self.tasks_pub.publish(msg)
 
         self.publish_json(self.state_pub, state)
 

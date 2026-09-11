@@ -131,6 +131,16 @@ class FleetManagerNode(Node):
             3.0,
         )
 
+        self.declare_parameter(
+            "fleet_state_publish_period_sec",
+            1.0,
+        )
+
+        self.declare_parameter(
+            "publish_split_state_topics",
+            False,
+        )
+
         self.config_file = os.path.expanduser(
             str(
                 self.get_parameter(
@@ -144,6 +154,23 @@ class FleetManagerNode(Node):
                 "status_timeout_sec"
             ).value
         )
+
+        self.fleet_state_publish_period_sec = max(
+            0.2,
+            float(
+                self.get_parameter(
+                    "fleet_state_publish_period_sec"
+                ).value
+            ),
+        )
+
+        self.publish_split_state_topics = bool(
+            self.get_parameter(
+                "publish_split_state_topics"
+            ).value
+        )
+
+        self.last_ready_value: Optional[bool] = None
 
         self.config = self.load_config(
             self.config_file
@@ -319,7 +346,7 @@ class FleetManagerNode(Node):
             )
 
         self.create_timer(
-            0.2,
+            self.fleet_state_publish_period_sec,
             self.timer_callback,
         )
 
@@ -2412,51 +2439,59 @@ class FleetManagerNode(Node):
             state_msg
         )
 
-        status_msg = String()
+        if self.publish_split_state_topics:
+            status_msg = String()
 
-        status_msg.data = json.dumps(
-            robots_payload,
-            separators=(",", ":"),
-        )
+            status_msg.data = json.dumps(
+                robots_payload,
+                separators=(",", ":"),
+            )
 
-        self.status_pub.publish(
-            status_msg
-        )
+            self.status_pub.publish(
+                status_msg
+            )
 
-        reservations_msg = String()
+            reservations_msg = String()
 
-        reservations_msg.data = json.dumps(
-            reservations,
-            separators=(",", ":"),
-        )
+            reservations_msg.data = json.dumps(
+                reservations,
+                separators=(",", ":"),
+            )
 
-        self.reservations_pub.publish(
-            reservations_msg
-        )
+            self.reservations_pub.publish(
+                reservations_msg
+            )
 
-        queue_msg = String()
+            queue_msg = String()
 
-        queue_msg.data = json.dumps(
-            queue_payload,
-            separators=(",", ":"),
-        )
+            queue_msg.data = json.dumps(
+                queue_payload,
+                separators=(",", ":"),
+            )
 
-        self.queue_pub.publish(
-            queue_msg
-        )
+            self.queue_pub.publish(
+                queue_msg
+            )
 
-        ready_msg = Bool()
-
-        ready_msg.data = all(
+        ready_value = all(
             robot.bridge_connected
             and robot.safety_ok
             for robot
             in self.robots.values()
         )
 
-        self.ready_pub.publish(
-            ready_msg
-        )
+        if (
+            self.last_ready_value is None
+            or ready_value != self.last_ready_value
+        ):
+            ready_msg = Bool()
+            ready_msg.data = ready_value
+
+            self.ready_pub.publish(
+                ready_msg
+            )
+
+            self.last_ready_value = ready_value
 
 
 def main(args=None) -> None:

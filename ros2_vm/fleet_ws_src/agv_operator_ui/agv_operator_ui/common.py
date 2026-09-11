@@ -75,7 +75,6 @@ class OperatorRosNode(Node):
         )
 
         self.create_subscription(String, "/delivery/state", self.delivery_state_cb, 10)
-        self.create_subscription(String, "/delivery/tasks", self.delivery_tasks_cb, 10)
         self.create_subscription(String, "/delivery/events", self.delivery_event_cb, 50)
         self.create_subscription(String, "/fleet/state", self.fleet_state_cb, 10)
         self.create_subscription(String, "/fleet/event", self.fleet_event_cb, 50)

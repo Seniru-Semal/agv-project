@@ -31,6 +31,8 @@ def generate_launch_description():
                         "exact_path_retry_sec": 1.0,
                         "controlled_retreat_delay_sec": 2.0,
                         "allow_idle_egress_borrowing": True,
+                        "fleet_state_publish_period_sec": 1.0,
+                        "publish_split_state_topics": False,
                     }
                 ],
             ),

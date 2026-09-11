@@ -47,6 +47,12 @@ def generate_launch_description():
 
                         "allow_idle_egress_borrowing":
                             True,
+
+                        "fleet_state_publish_period_sec":
+                            1.0,
+
+                        "publish_split_state_topics":
+                            False,
                     }
                 ],
             ),
