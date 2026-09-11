@@ -28,6 +28,7 @@ class MissionManagerNode(Node):
         self.declare_parameter("reset_feature_action_on_start", True)
         self.declare_parameter("start_line_follow_on_start", True)
         self.declare_parameter("auto_stop_on_cancel", True)
+        self.declare_parameter("cancel_on_feature_action_timeout", False)
         self.declare_parameter("geometry_straight_dot_threshold", 0.70)
         self.declare_parameter("geometry_uturn_dot_threshold", -0.70)
 
@@ -42,6 +43,9 @@ class MissionManagerNode(Node):
         )
         self.auto_stop_on_cancel = bool(
             self.get_parameter("auto_stop_on_cancel").value
+        )
+        self.cancel_on_feature_action_timeout = bool(
+            self.get_parameter("cancel_on_feature_action_timeout").value
         )
 
         self.geometry_straight_dot_threshold = float(
@@ -965,7 +969,16 @@ class MissionManagerNode(Node):
             return
 
         if event.startswith("FEATURE_ACTION_TIMEOUT"):
-            self.cancel_mission(f"MISSION_CANCELLED_{event}")
+            if self.cancel_on_feature_action_timeout:
+                self.cancel_mission(f"MISSION_CANCELLED_{event}")
+                return
+
+            self.publish_stop()
+            self.publish_event(f"MISSION_HELD_{event}")
+            self.publish_state()
+            self.get_logger().warn(
+                f"Mission kept active after {event}; manual recovery required"
+            )
             return
 
     def handle_junction_reached(self):

@@ -39,6 +39,16 @@ class SafetyHoldNode(Node):
         )
 
         self.declare_parameter(
+            "allow_manual_junction_resume",
+            True,
+        )
+
+        self.declare_parameter(
+            "resend_branch_on_junction_resume",
+            True,
+        )
+
+        self.declare_parameter(
             "local_auto_resume_enabled",
             True,
         )
@@ -72,6 +82,18 @@ class SafetyHoldNode(Node):
             ).value
         )
 
+        self.allow_manual_junction_resume = bool(
+            self.get_parameter(
+                "allow_manual_junction_resume"
+            ).value
+        )
+
+        self.resend_branch_on_junction_resume = bool(
+            self.get_parameter(
+                "resend_branch_on_junction_resume"
+            ).value
+        )
+
         self.local_auto_resume_enabled = bool(
             self.get_parameter(
                 "local_auto_resume_enabled"
@@ -100,6 +122,8 @@ class SafetyHoldNode(Node):
         self.held_mission_state = "UNKNOWN"
         self.held_feature_state = "UNKNOWN"
         self.held_turn_state = "UNKNOWN"
+        self.held_junction_command = "NONE"
+        self.last_junction_command = "NONE"
 
         self.clear_since = None
         self.last_stop_publish_time = 0.0
@@ -149,6 +173,13 @@ class SafetyHoldNode(Node):
         )
 
         self.create_subscription(
+            String,
+            f"/{self.robot_ns}/junction_cmd",
+            self.junction_command_callback,
+            10,
+        )
+
+        self.create_subscription(
             Bool,
             f"/{self.robot_ns}/safety/ok",
             self.safety_ok_callback,
@@ -176,6 +207,16 @@ class SafetyHoldNode(Node):
             Bool,
             (
                 f"/{self.robot_ns}/"
+                "safety_hold/manual_resume_request"
+            ),
+            self.manual_resume_callback,
+            10,
+        )
+
+        self.create_subscription(
+            Bool,
+            (
+                f"/{self.robot_ns}/"
                 "safety_hold/reset_request"
             ),
             self.reset_callback,
@@ -191,6 +232,12 @@ class SafetyHoldNode(Node):
         self.start_pub = self.create_publisher(
             Bool,
             f"/{self.robot_ns}/cmd/start",
+            10,
+        )
+
+        self.raw_cmd_pub = self.create_publisher(
+            String,
+            f"/{self.robot_ns}/cmd/raw",
             10,
         )
 
@@ -247,6 +294,13 @@ class SafetyHoldNode(Node):
     def normalize(value):
         return str(value).strip().upper()
 
+    def mission_state_can_resume(self, value):
+        state = self.normalize(value)
+        return (
+            state == "RUNNING_TO_NEXT_NODE"
+            or state.startswith("COMMAND_SENT_")
+        )
+
     def publish_event(self, event):
         msg = String()
         msg.data = event
@@ -273,6 +327,11 @@ class SafetyHoldNode(Node):
         msg = Bool()
         msg.data = True
         self.start_pub.publish(msg)
+
+    def publish_raw_command(self, command):
+        msg = String()
+        msg.data = command
+        self.raw_cmd_pub.publish(msg)
 
     def obstacle_callback(self, msg):
         self.obstacle_state = self.normalize(
@@ -335,6 +394,12 @@ class SafetyHoldNode(Node):
             msg.data
         )
 
+    def junction_command_callback(self, msg):
+        command = self.normalize(msg.data)
+
+        if command in {"STRAIGHT", "LEFT", "RIGHT"}:
+            self.last_junction_command = command
+
     def safety_ok_callback(self, msg):
         self.safety_ok = bool(msg.data)
 
@@ -358,6 +423,10 @@ class SafetyHoldNode(Node):
 
             self.held_turn_state = (
                 self.turn_state
+            )
+
+            self.held_junction_command = (
+                self.last_junction_command
             )
 
             self.publish_stop(force=True)
@@ -418,9 +487,8 @@ class SafetyHoldNode(Node):
                 "ROBOT_SAFETY_NOT_OK",
             )
 
-        if (
+        if not self.mission_state_can_resume(
             self.held_mission_state
-            != "RUNNING_TO_NEXT_NODE"
         ):
             return (
                 False,
@@ -457,9 +525,8 @@ class SafetyHoldNode(Node):
                 ),
             )
 
-        if (
+        if not self.mission_state_can_resume(
             self.mission_state
-            != "RUNNING_TO_NEXT_NODE"
         ):
             return (
                 False,
@@ -492,6 +559,56 @@ class SafetyHoldNode(Node):
             "LINE_FOLLOW_RESUME_ALLOWED",
         )
 
+    def held_branch_command(self):
+        prefix = "COMMAND_SENT_"
+
+        if self.held_mission_state.startswith(prefix):
+            command = self.held_mission_state[len(prefix):]
+        else:
+            command = self.held_junction_command
+
+        if command in {"STRAIGHT", "LEFT", "RIGHT"}:
+            return command
+
+        return ""
+
+    def manual_resume_allowed(self):
+        allowed, reason = self.resume_allowed()
+
+        if allowed:
+            return True, reason, "LINE_FOLLOW"
+
+        if not self.allow_manual_junction_resume:
+            return False, "MANUAL_JUNCTION_RESUME_DISABLED", "NONE"
+
+        if not self.hold_active:
+            return False, "NO_ACTIVE_HOLD", "NONE"
+
+        if not self.mission_active:
+            return False, "MISSION_NOT_ACTIVE", "NONE"
+
+        if not self.clear_is_stable():
+            return False, "OBSTACLE_NOT_STABLY_CLEAR", "NONE"
+
+        if not self.bridge_connected:
+            return False, "BRIDGE_NOT_CONNECTED", "NONE"
+
+        if not self.safety_ok:
+            return False, "ROBOT_SAFETY_NOT_OK", "NONE"
+
+        if self.held_feature_state != "CLEARING_JUNCTION":
+            return False, "HELD_FEATURE_STATE_NOT_JUNCTION_CLEARING", "NONE"
+
+        if self.held_turn_state not in {"IDLE", "DONE"}:
+            return False, "HELD_TURN_STATE_UNSAFE", "NONE"
+
+        command = self.held_branch_command()
+
+        if not command:
+            return False, "NO_HELD_BRANCH_COMMAND", "NONE"
+
+        return True, f"JUNCTION_CLEARING_RESUME_ALLOWED_{command}", "JUNCTION_CLEARING"
+
     def resume_callback(self, msg):
         if not msg.data:
             return
@@ -518,6 +635,43 @@ class SafetyHoldNode(Node):
         self.hold_reason = "NONE"
 
         self.publish_start()
+
+        self.publish_event(event)
+        self.get_logger().info(event)
+
+        self.clear_held_states()
+        self.publish_status(force=True)
+
+    def manual_resume_callback(self, msg):
+        if not msg.data:
+            return
+
+        allowed, reason, mode = self.manual_resume_allowed()
+
+        if not allowed:
+            event = f"MANUAL_RESUME_REJECTED_{reason}"
+            self.publish_event(event)
+            self.get_logger().warn(event)
+            return
+
+        command = self.held_branch_command()
+
+        self.hold_active = False
+        self.hold_reason = "NONE"
+
+        if (
+            mode == "JUNCTION_CLEARING"
+            and command
+            and self.resend_branch_on_junction_resume
+        ):
+            self.publish_raw_command(f"C:SET_BRANCH,{command}")
+
+        self.publish_start()
+
+        if mode == "JUNCTION_CLEARING":
+            event = f"MANUAL_RESUME_ACCEPTED_JUNCTION_CLEARING_{command}"
+        else:
+            event = "MANUAL_RESUME_ACCEPTED_LINE_FOLLOW"
 
         self.publish_event(event)
         self.get_logger().info(event)
@@ -567,6 +721,7 @@ class SafetyHoldNode(Node):
         self.held_mission_state = "UNKNOWN"
         self.held_feature_state = "UNKNOWN"
         self.held_turn_state = "UNKNOWN"
+        self.held_junction_command = "NONE"
 
     def clear_hold_without_start(self, event):
         self.hold_active = False

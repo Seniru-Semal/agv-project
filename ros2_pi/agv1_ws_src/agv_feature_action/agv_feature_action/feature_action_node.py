@@ -38,6 +38,7 @@ class FeatureActionNode(Node):
 
         self.declare_parameter("event_cooldown_sec", 1.0)
         self.declare_parameter("move_timeout_sec", 20.0)
+        self.declare_parameter("pause_timeout_on_safety_hold", True)
 
         self.declare_parameter("left_turn_angle_deg", 100.0)
         self.declare_parameter("right_turn_angle_deg", -100.0)
@@ -84,6 +85,9 @@ class FeatureActionNode(Node):
         )
         self.move_timeout_sec = float(
             self.get_parameter("move_timeout_sec").value
+        )
+        self.pause_timeout_on_safety_hold = bool(
+            self.get_parameter("pause_timeout_on_safety_hold").value
         )
 
         self.left_turn_angle_deg = float(
@@ -211,6 +215,9 @@ class FeatureActionNode(Node):
         )
         self.create_subscription(
             Bool, "/agv_1/mission/active", self.mission_active_callback, 10
+        )
+        self.create_subscription(
+            Bool, "/agv_1/safety_hold/active", self.safety_hold_active_callback, 10
         )
         self.create_subscription(
             Bool, "/agv_1/safety_hold/active", self.safety_hold_callback, 10
@@ -457,6 +464,9 @@ class FeatureActionNode(Node):
             self.safety_hold_started_at = 0.0
 
         self.safety_hold_active = active
+
+    def safety_hold_active_callback(self, msg: Bool):
+        self.safety_hold_active = bool(msg.data)
 
     def manual_enable_callback(self, msg: Bool):
         self.manual_enable = bool(msg.data)
@@ -1120,6 +1130,10 @@ class FeatureActionNode(Node):
             return
 
         if self.move_start_time <= 0.0:
+            return
+
+        if self.pause_timeout_on_safety_hold and self.safety_hold_active:
+            self.move_start_time = time.time()
             return
 
         elapsed = time.time() - self.move_start_time

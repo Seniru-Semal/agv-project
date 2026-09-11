@@ -444,6 +444,16 @@ class FleetManagerNode(Node):
                     10,
                 ),
 
+            "manual_resume":
+                self.create_publisher(
+                    Bool,
+                    (
+                        f"{prefix}/safety_hold/"
+                        "manual_resume_request"
+                    ),
+                    10,
+                ),
+
             "estop":
                 self.create_publisher(
                     Bool,

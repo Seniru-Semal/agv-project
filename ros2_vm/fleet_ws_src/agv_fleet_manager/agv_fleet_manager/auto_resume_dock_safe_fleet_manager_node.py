@@ -217,6 +217,26 @@ class AutoResumeDockSafeFleetManagerNode(DockSafeFleetManagerNode):
             f"source={source}"
         )
 
+    def send_manual_resume_request(
+        self,
+        robot_name: str,
+    ) -> None:
+        self.publish_bool(
+            self.robot_publishers[
+                robot_name
+            ]["manual_resume"],
+            True,
+        )
+
+        self.last_resume_request_time[
+            robot_name
+        ] = time.monotonic()
+
+        self.publish_event(
+            "MANUAL_RESUME_REQUEST_SENT "
+            f"robot={robot_name}"
+        )
+
     def resume_callback(
         self,
         msg: String,
@@ -227,24 +247,33 @@ class AutoResumeDockSafeFleetManagerNode(DockSafeFleetManagerNode):
             )
         )
 
-        ready, reason = (
-            self.resume_ready(
-                robot_name
-            )
-        )
-
-        if not ready:
+        if robot_name not in self.robots:
             self.publish_event(
                 "RESUME_REJECTED "
                 f"robot={robot_name} "
-                f"reason={reason}"
+                "reason=unknown_robot"
             )
             return
 
-        self.send_resume_request(
-            robot_name,
-            source="manual",
-        )
+        robot = self.robots[robot_name]
+
+        if not robot.mission_id or not robot.mission_active:
+            self.publish_event(
+                "RESUME_REJECTED "
+                f"robot={robot_name} "
+                "reason=no_active_mission"
+            )
+            return
+
+        if not robot.safety_hold:
+            self.publish_event(
+                "RESUME_REJECTED "
+                f"robot={robot_name} "
+                "reason=no_active_hold"
+            )
+            return
+
+        self.send_manual_resume_request(robot_name)
 
     def auto_resume_timer_callback(
         self,
