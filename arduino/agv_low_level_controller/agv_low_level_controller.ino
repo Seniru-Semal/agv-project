@@ -1,6 +1,8 @@
 /*
   AGV1 LARGE-CHASSIS MIGRATION - 13-SENSOR WHITE LINE FOLLOWER
 
+  Refinements preserve the Pi/RFID-controlled junction architecture.
+
   Hardware:
   - Arduino Mega
   - 13-channel switching IR array on A0-A12
@@ -54,6 +56,16 @@ const int RIGHT_ENC_B_PIN = 19;
 
 const int STATUS_LED = LED_BUILTIN;
 
+// Active-low relay module.
+// Input 1 on D42 drives the warning light.
+// Inputs 2-4 are defined now so they can be used later without repinning.
+const int WARNING_RELAY_LIGHT_PIN = 42;
+const int WARNING_RELAY_SPARE_1_PIN = 44;
+const int WARNING_RELAY_SPARE_2_PIN = 46;
+const int WARNING_RELAY_SPARE_3_PIN = 48;
+
+const bool WARNING_RELAY_ACTIVE_LOW = true;
+
 // ==================================================
 // Hardware calibration
 // ==================================================
@@ -66,7 +78,7 @@ const bool INVERT_RIGHT_MOTOR = true;
 const bool INVERT_STEERING = false;
 
 const bool INVERT_LEFT_ENCODER = true;
-const bool INVERT_RIGHT_ENCODER = true;
+const bool INVERT_RIGHT_ENCODER = false;
 
 // ==================================================
 // IR detection settings
@@ -78,51 +90,88 @@ const int MIN_CONTRAST = 20;
 // White-line detection:
 // signalValues[i] >= SENSOR_SIGNAL_THRESHOLD[i]
 const int SENSOR_SIGNAL_THRESHOLD[SENSOR_COUNT] = {
-  /* A0  rightmost */ 245,
-  /* A1            */ 255,
-  /* A2            */ 350,
-  /* A3            */ 310,
-  /* A4            */ 320,
-  /* A5            */ 320,
-  /* A6  centre    */ 300,
-  /* A7            */ 355,
-  /* A8            */ 315,
-  /* A9            */ 315,
-  /* A10           */ 290,
-  /* A11           */ 265,
-  /* A12 leftmost  */ 190
+  /* A0  rightmost */ 400,
+  /* A1            */ 400,
+  /* A2            */ 400,
+  /* A3            */ 400,
+  /* A4            */ 400,
+  /* A5            */ 400,
+  /* A6  centre    */ 400,
+  /* A7            */ 400,
+  /* A8            */ 400,
+  /* A9            */ 400,
+  /* A10           */ 400,
+  /* A11           */ 400,
+  /* A12 leftmost  */ 400
 };
 
 const int LINE_ACTIVE_MIN = 1;
 const int LINE_TOTAL_STRENGTH_MIN = 20;
 
-const bool REPORT_SENSOR_SIGNALS = true;
+// Keep full 13-channel SIG telemetry off during normal driving.  Turn this on
+// only for stationary calibration or a short supervised diagnostic run.
+const bool REPORT_SENSOR_SIGNALS = false;
 
 const int ANALOG_SAMPLES = 5;
 const int ANALOG_SAMPLE_DELAY_US = 100;
 const int IR_SETTLE_DELAY_US = 1000;
 
+// A sensor turns on at its calibrated threshold and stays on until its signal
+// falls this far below the threshold.  This suppresses threshold chatter
+// without changing the calibrated turn-on point.
+const int SENSOR_RELEASE_HYSTERESIS = 15;
+
 // ==================================================
 // PID settings
 // ==================================================
 
-float Kp = 0.11;
-float Ki = 0.02;
-float Kd = 1.3;
+float Kp = 0.115;
+float Ki = 0.00;
+float Kd = 1.0;
 
 int baseSpeed = 40;
 
-const int ABSOLUTE_MAX_MOTOR_PWM = 40;
+// Hard safety ceiling for every normal, pivot, raw-drive, recovery and brake
+// command. Do not raise this value on the large chassis.
+const int ABSOLUTE_MAX_MOTOR_PWM = 80;
 
-const int MAX_NORMAL_LINE_STEERING = 30;
-const int MAX_CORNER_LINE_STEERING = 40;
+const int MAX_NORMAL_LINE_STEERING = 35;
+const int MAX_CORNER_LINE_STEERING = 45;
 const int MAX_CORNER_REVERSE_PWM = 0;
 const int MAX_DERIVATIVE_STEP = 180;
 
 const int PWM_RISE_PER_CONTROL = 3;
 const int PWM_FALL_PER_CONTROL = 6;
 
+// Never keep the previous strong steering command while the line is invalid.
+const int LINE_LOST_HOLD_PWM = 18;
+
 const float INTEGRAL_LIMIT = 300.0;
+
+// ==================================================
+// Follow-only encoder speed control
+// ==================================================
+// Measured on the large AGV over 2,000 mm:
+// left = 2,149 ticks, right = 2,107 ticks.
+const bool WHEEL_SPEED_CONTROL_ENABLED = true;
+const float LEFT_TICKS_PER_MM = 1.0745f;
+const float RIGHT_TICKS_PER_MM = 1.0535f;
+
+// Measured loaded straight-drive reference points:
+// PWM 40 for 5 s -> 525 mm/s vehicle average.
+// PWM 80 for 4 s -> 1,200 mm/s vehicle average.
+const int SPEED_REFERENCE_PWM_LOW = 40;
+const int SPEED_REFERENCE_PWM_HIGH = 80;
+const float FOLLOW_SPEED_MM_S_AT_PWM_40 = 525.0f;
+const float FOLLOW_SPEED_MM_S_AT_PWM_80 = 1200.0f;
+
+// These are wheel-speed PID gains in PWM per (mm/s).  They apply only while
+// STATE_FOLLOW owns the motors; raw drive, pivots and recovery remain direct.
+float wheelSpeedKp = 0.040f;
+float wheelSpeedKi = 0.010f;
+float wheelSpeedKd = 0.000f;
+const float WHEEL_SPEED_INTEGRAL_LIMIT = 800.0f;
+const int MAX_WHEEL_SPEED_CORRECTION_PWM = 20;
 
 // ==================================================
 // Active braking
@@ -137,20 +186,21 @@ const unsigned long ACTIVE_BRAKE_TIME_MS = 120;
 // ==================================================
 
 const int LINE_LOST_RECOVERY_FRAMES = 5;
-const int LINE_LOST_STOP_FRAMES = 40;
 
-const int FORWARD_RECOVERY_PWM = 18;
-const unsigned long FORWARD_RECOVERY_TIME_MS = 350;
+const int FORWARD_RECOVERY_PWM = 25;
+const unsigned long FORWARD_RECOVERY_TIME_MS = 850;
+
+const int TURN_RECOVERY_PWM = 30;
 
 const int CORNER_DETECT_POSITION = 220;
 
 const int REACQUIRE_POSITION_TOLERANCE = 170;
-const int REACQUIRE_CONFIRM_FRAMES = 5;
+const int REACQUIRE_CONFIRM_FRAMES = 3;
 const unsigned long MAX_TURN_RECOVERY_TIME_MS = 2500;
 
 const int RECOVERY_DIRECTION_MIN_POSITION = 40;
 const int RECOVERY_DIRECTION_CONFIRM_FRAMES = 3;
-const unsigned long RECOVERY_HINT_MAX_AGE_MS = 800;
+const unsigned long RECOVERY_HINT_MAX_AGE_MS = 1500;
 
 // ==================================================
 // Junction cluster telemetry settings
@@ -170,14 +220,29 @@ const int RIGHT_BRANCH_LAST_INDEX = SENSOR_COUNT / 2;
 const int LEFT_BRANCH_FIRST_INDEX = SENSOR_COUNT / 2;
 const int LEFT_BRANCH_LAST_INDEX = SENSOR_COUNT - 1;
 
-const int STRAIGHT_BRANCH_FIRST_INDEX = 4;
-const int STRAIGHT_BRANCH_LAST_INDEX = 8;
+const int STRAIGHT_BRANCH_FIRST_INDEX = 5;
+const int STRAIGHT_BRANCH_LAST_INDEX = 7;
+
+const int STRAIGHT_BRANCH_FALLBACK_FIRST_INDEX = 4;
+const int STRAIGHT_BRANCH_FALLBACK_LAST_INDEX = 8;
+
+const int STRAIGHT_BRANCH_POSITION_LIMIT = 45;
+const int TURN_BRANCH_POSITION_LIMIT = 140;
+
+const int STRAIGHT_BRANCH_STEERING_LIMIT = 10;
+const int TURN_BRANCH_STEERING_LIMIT = 18;
+
+// The Pi/RFID still chooses LEFT or RIGHT.  This only gives a selected branch
+// enough turning authority without ever raising the physical PWM ceiling.
+const int ACTIVE_BRANCH_SPEED = 25;
 
 // ==================================================
 // Timing
 // ==================================================
 
-const unsigned long CONTROL_INTERVAL_MS = 20;
+// Five averaged OFF reads plus five averaged ON reads cannot complete safely
+// in 20 ms on an Arduino Mega.  A fixed 35 ms period keeps PID timing stable.
+const unsigned long CONTROL_INTERVAL_MS = 35;
 const unsigned long STATUS_INTERVAL_MS = 50;
 
 const bool COMMAND_WATCHDOG_ENABLED = false;
@@ -225,6 +290,7 @@ int onValues[SENSOR_COUNT];
 int signalValues[SENSOR_COUNT];
 int lineStrengthValues[SENSOR_COUNT];
 bool lineActiveMask[SENSOR_COUNT];
+bool sensorLatchedMask[SENSOR_COUNT];
 
 int currentLinePosition = 0;
 int activeSensorCount = 0;
@@ -283,6 +349,34 @@ volatile long rightTicks = 0;
 
 volatile byte lastLeftEncoderState = 0;
 volatile byte lastRightEncoderState = 0;
+
+// ==================================================
+// Wheel speed-control state
+// ==================================================
+
+long lastSpeedLeftTicks = 0;
+long lastSpeedRightTicks = 0;
+unsigned long lastWheelSpeedSampleTimeMs = 0;
+bool wheelSpeedSampleValid = false;
+
+float leftMeasuredTicksPerSecond = 0.0f;
+float rightMeasuredTicksPerSecond = 0.0f;
+float leftMeasuredSpeedMmS = 0.0f;
+float rightMeasuredSpeedMmS = 0.0f;
+float wheelSpeedSamplePeriodSeconds =
+  (float)CONTROL_INTERVAL_MS / 1000.0f;
+
+float leftTargetSpeedMmS = 0.0f;
+float rightTargetSpeedMmS = 0.0f;
+float leftSpeedErrorMmS = 0.0f;
+float rightSpeedErrorMmS = 0.0f;
+
+float leftSpeedIntegral = 0.0f;
+float rightSpeedIntegral = 0.0f;
+float leftLastSpeedError = 0.0f;
+float rightLastSpeedError = 0.0f;
+float leftWheelPwmCorrection = 0.0f;
+float rightWheelPwmCorrection = 0.0f;
 
 // ==================================================
 // Serial
@@ -390,6 +484,8 @@ void setup() {
   pinMode(IR_TX_PIN, OUTPUT);
   setIrEmitter(false);
 
+  setupWarningRelayOutputs();
+
   pinMode(LEFT_RPWM_PIN, OUTPUT);
   pinMode(LEFT_LPWM_PIN, OUTPUT);
   pinMode(RIGHT_RPWM_PIN, OUTPUT);
@@ -472,6 +568,43 @@ void setIrEmitter(bool on) {
 }
 
 // ==================================================
+// Warning relay outputs
+// ==================================================
+
+void writeRelayOutput(int pin, bool active) {
+  if (WARNING_RELAY_ACTIVE_LOW) {
+    digitalWrite(pin, active ? LOW : HIGH);
+  } else {
+    digitalWrite(pin, active ? HIGH : LOW);
+  }
+}
+
+void prepareRelayOutput(int pin) {
+  writeRelayOutput(pin, false);
+  pinMode(pin, OUTPUT);
+  writeRelayOutput(pin, false);
+}
+
+void setupWarningRelayOutputs() {
+  prepareRelayOutput(WARNING_RELAY_LIGHT_PIN);
+  prepareRelayOutput(WARNING_RELAY_SPARE_1_PIN);
+  prepareRelayOutput(WARNING_RELAY_SPARE_2_PIN);
+  prepareRelayOutput(WARNING_RELAY_SPARE_3_PIN);
+}
+
+void setWarningLight(bool active) {
+  writeRelayOutput(WARNING_RELAY_LIGHT_PIN, active);
+}
+
+void updateWarningLightFromMotorCommands() {
+  bool motorsCommanded =
+    lastLeftCommand != 0 ||
+    lastRightCommand != 0;
+
+  setWarningLight(motorsCommanded);
+}
+
+// ==================================================
 // Line cluster selection
 // ==================================================
 
@@ -491,7 +624,9 @@ void clearLineSelectionState() {
 }
 
 void expireBranchCommandIfNeeded() {
-  if (branchMode == BRANCH_AUTO) {
+  // A failed recovery must preserve the Pi-selected branch for the supervised
+  // C:REACQUIRE_LINE attempt.  RESET, ESTOP and an explicit CLEAR still clear it.
+  if (branchMode == BRANCH_AUTO || recoveryStopLatched) {
     return;
   }
 
@@ -684,18 +819,40 @@ void selectLineForTracking() {
       STRAIGHT_BRANCH_FIRST_INDEX,
       STRAIGHT_BRANCH_LAST_INDEX
     );
+
+    if (!selected) {
+      selected = chooseClusterInRange(
+        BRANCH_STRAIGHT,
+        STRAIGHT_BRANCH_FALLBACK_FIRST_INDEX,
+        STRAIGHT_BRANCH_FALLBACK_LAST_INDEX
+      );
+    }
   }
 
   if (selected) {
     return;
   }
 
+  if (branchMode == BRANCH_STRAIGHT) {
+    return;
+  }
+
+  if (junctionCandidate) {
+    selected = chooseClusterInRange(
+      BRANCH_STRAIGHT,
+      STRAIGHT_BRANCH_FALLBACK_FIRST_INDEX,
+      STRAIGHT_BRANCH_FALLBACK_LAST_INDEX
+    );
+
+    if (selected) {
+      return;
+    }
+  }
+
   BranchMode fallbackMode = BRANCH_AUTO;
 
   if (branchMode == BRANCH_LEFT || branchMode == BRANCH_RIGHT) {
     fallbackMode = branchMode;
-  } else if (branchMode == BRANCH_STRAIGHT || junctionCandidate) {
-    fallbackMode = BRANCH_STRAIGHT;
   }
 
   chooseClusterInRange(fallbackMode, 0, SENSOR_COUNT - 1);
@@ -764,8 +921,9 @@ void readSensorsSwitching() {
     }
   }
 
+  // The early quality gates below must never leave the previous frame marked
+  // valid after the emitter/sensor signal disappears.
   clearLineSelectionState();
-  expireBranchCommandIfNeeded();
 
   if (maxSignal < MIN_MAX_SIGNAL) {
     return;
@@ -778,8 +936,23 @@ void readSensorsSwitching() {
   }
 
   for (int i = 0; i < SENSOR_COUNT; i++) {
-    if (signalValues[i] >= SENSOR_SIGNAL_THRESHOLD[i]) {
-      lineStrengthValues[i] = signalValues[i] - SENSOR_SIGNAL_THRESHOLD[i];
+    int threshold = SENSOR_SIGNAL_THRESHOLD[i];
+
+    if (sensorLatchedMask[i]) {
+      if (signalValues[i] < threshold - SENSOR_RELEASE_HYSTERESIS) {
+        sensorLatchedMask[i] = false;
+      }
+    } else if (signalValues[i] >= threshold) {
+      sensorLatchedMask[i] = true;
+    }
+
+    if (sensorLatchedMask[i]) {
+      // Keep a small positive contribution while the channel is held by the
+      // release hysteresis, so a valid cluster does not flicker at threshold.
+      lineStrengthValues[i] = max(
+        1,
+        signalValues[i] - (threshold - SENSOR_RELEASE_HYSTERESIS)
+      );
       lineActiveMask[i] = true;
     }
   }
@@ -787,31 +960,229 @@ void readSensorsSwitching() {
   selectLineForTracking();
 }
 
+// ==================================================
+// Follow-only encoder speed control
+// ==================================================
+
+void updateWheelSpeedMeasurement(unsigned long now) {
+  long leftCopy = 0;
+  long rightCopy = 0;
+
+  noInterrupts();
+  leftCopy = leftTicks;
+  rightCopy = rightTicks;
+  interrupts();
+
+  if (!wheelSpeedSampleValid) {
+    lastSpeedLeftTicks = leftCopy;
+    lastSpeedRightTicks = rightCopy;
+    lastWheelSpeedSampleTimeMs = now;
+    wheelSpeedSampleValid = true;
+    return;
+  }
+
+  unsigned long elapsedMs = now - lastWheelSpeedSampleTimeMs;
+
+  if (elapsedMs == 0) {
+    return;
+  }
+
+  long leftDelta = leftCopy - lastSpeedLeftTicks;
+  long rightDelta = rightCopy - lastSpeedRightTicks;
+
+  float seconds = (float)elapsedMs / 1000.0f;
+  wheelSpeedSamplePeriodSeconds = seconds;
+
+  leftMeasuredTicksPerSecond = (float)leftDelta / seconds;
+  rightMeasuredTicksPerSecond = (float)rightDelta / seconds;
+
+  leftMeasuredSpeedMmS = leftMeasuredTicksPerSecond / LEFT_TICKS_PER_MM;
+  rightMeasuredSpeedMmS = rightMeasuredTicksPerSecond / RIGHT_TICKS_PER_MM;
+
+  lastSpeedLeftTicks = leftCopy;
+  lastSpeedRightTicks = rightCopy;
+  lastWheelSpeedSampleTimeMs = now;
+}
+
+void resetWheelSpeedControl() {
+  leftTargetSpeedMmS = 0.0f;
+  rightTargetSpeedMmS = 0.0f;
+  leftSpeedErrorMmS = 0.0f;
+  rightSpeedErrorMmS = 0.0f;
+  leftSpeedIntegral = 0.0f;
+  rightSpeedIntegral = 0.0f;
+  leftLastSpeedError = 0.0f;
+  rightLastSpeedError = 0.0f;
+  leftWheelPwmCorrection = 0.0f;
+  rightWheelPwmCorrection = 0.0f;
+}
+
+float pwmToFollowSpeedMmS(int pwmMagnitude) {
+  pwmMagnitude = constrain(
+    pwmMagnitude,
+    0,
+    ABSOLUTE_MAX_MOTOR_PWM
+  );
+
+  if (pwmMagnitude == 0) {
+    return 0.0f;
+  }
+
+  if (pwmMagnitude <= SPEED_REFERENCE_PWM_LOW) {
+    return
+      FOLLOW_SPEED_MM_S_AT_PWM_40 *
+      ((float)pwmMagnitude / SPEED_REFERENCE_PWM_LOW);
+  }
+
+  if (pwmMagnitude <= SPEED_REFERENCE_PWM_HIGH) {
+    float fraction =
+      (float)(pwmMagnitude - SPEED_REFERENCE_PWM_LOW) /
+      (SPEED_REFERENCE_PWM_HIGH - SPEED_REFERENCE_PWM_LOW);
+
+    return
+      FOLLOW_SPEED_MM_S_AT_PWM_40 +
+      fraction * (
+        FOLLOW_SPEED_MM_S_AT_PWM_80 -
+        FOLLOW_SPEED_MM_S_AT_PWM_40
+      );
+  }
+
+  return FOLLOW_SPEED_MM_S_AT_PWM_80;
+}
+
+int applySingleWheelSpeedControl(
+  int openLoopCommand,
+  float measuredSpeedMmS,
+  float &targetSpeedMmS,
+  float &speedErrorMmS,
+  float &speedIntegral,
+  float &lastSpeedError,
+  float &pwmCorrection
+) {
+  int direction = 0;
+
+  if (openLoopCommand > 0) {
+    direction = 1;
+  } else if (openLoopCommand < 0) {
+    direction = -1;
+  } else {
+    targetSpeedMmS = 0.0f;
+    speedErrorMmS = 0.0f;
+    speedIntegral = 0.0f;
+    lastSpeedError = 0.0f;
+    pwmCorrection = 0.0f;
+    return 0;
+  }
+
+  int openLoopMagnitude = abs(openLoopCommand);
+  targetSpeedMmS = pwmToFollowSpeedMmS(openLoopMagnitude);
+
+  // Compare speeds in the requested travel direction.  This preserves signed
+  // encoder conventions if a future FOLLOW mode allows reverse commands.
+  float measuredAlongCommandMmS = measuredSpeedMmS * direction;
+  speedErrorMmS = targetSpeedMmS - measuredAlongCommandMmS;
+
+  float dtSeconds = wheelSpeedSamplePeriodSeconds;
+
+  if (dtSeconds <= 0.0f) {
+    dtSeconds = (float)CONTROL_INTERVAL_MS / 1000.0f;
+  }
+  speedIntegral += speedErrorMmS * dtSeconds;
+  speedIntegral = constrain(
+    speedIntegral,
+    -WHEEL_SPEED_INTEGRAL_LIMIT,
+    WHEEL_SPEED_INTEGRAL_LIMIT
+  );
+
+  float derivative =
+    (speedErrorMmS - lastSpeedError) / dtSeconds;
+
+  pwmCorrection =
+    (wheelSpeedKp * speedErrorMmS) +
+    (wheelSpeedKi * speedIntegral) +
+    (wheelSpeedKd * derivative);
+
+  pwmCorrection = constrain(
+    pwmCorrection,
+    -MAX_WHEEL_SPEED_CORRECTION_PWM,
+    MAX_WHEEL_SPEED_CORRECTION_PWM
+  );
+
+  lastSpeedError = speedErrorMmS;
+
+  int correctedMagnitude = openLoopMagnitude + (int)pwmCorrection;
+  correctedMagnitude = constrain(
+    correctedMagnitude,
+    0,
+    ABSOLUTE_MAX_MOTOR_PWM
+  );
+
+  return direction * correctedMagnitude;
+}
+
+void setFollowDriveCommand(int leftCommand, int rightCommand) {
+  if (!WHEEL_SPEED_CONTROL_ENABLED || !wheelSpeedSampleValid) {
+    resetWheelSpeedControl();
+    setDriveCommand(leftCommand, rightCommand);
+    return;
+  }
+
+  int correctedLeft = applySingleWheelSpeedControl(
+    leftCommand,
+    leftMeasuredSpeedMmS,
+    leftTargetSpeedMmS,
+    leftSpeedErrorMmS,
+    leftSpeedIntegral,
+    leftLastSpeedError,
+    leftWheelPwmCorrection
+  );
+
+  int correctedRight = applySingleWheelSpeedControl(
+    rightCommand,
+    rightMeasuredSpeedMmS,
+    rightTargetSpeedMmS,
+    rightSpeedErrorMmS,
+    rightSpeedIntegral,
+    rightLastSpeedError,
+    rightWheelPwmCorrection
+  );
+
+  setDriveCommand(correctedLeft, correctedRight);
+}
+
 void runControlLoop() {
-  readSensorsSwitching();
+  updateWheelSpeedMeasurement(millis());
 
   if (eStopActive) {
+    resetWheelSpeedControl();
     stopMotors();
     driveState = STATE_ESTOP;
     return;
   }
 
+  // Do not spend a full switching-IR scan while stopped, in RAW_DRIVE or while
+  // an IMU/manual pivot owns the motors.  Normal line following and recovery
+  // still use the exact same IR acquisition path.
   if (driveState == STATE_RAW_DRIVE) {
+    resetWheelSpeedControl();
     setDriveCommand(rawLeftCommand, rawRightCommand);
     return;
   }
 
   if (driveState == STATE_MANUAL_PIVOT_LEFT) {
+    resetWheelSpeedControl();
     setDriveCommand(-manualPivotPwm, manualPivotPwm);
     return;
   }
 
   if (driveState == STATE_MANUAL_PIVOT_RIGHT) {
+    resetWheelSpeedControl();
     setDriveCommand(manualPivotPwm, -manualPivotPwm);
     return;
   }
 
   if (!followEnabled) {
+    resetWheelSpeedControl();
     if (driveState != STATE_STOPPED) {
       driveState = STATE_IDLE;
     }
@@ -820,7 +1191,14 @@ void runControlLoop() {
     return;
   }
 
-  if (driveState == STATE_RECOVER_FORWARD) {
+  readSensorsSwitching();
+
+  if (
+    driveState == STATE_RECOVER_FORWARD ||
+    driveState == STATE_RECOVER_LEFT ||
+    driveState == STATE_RECOVER_RIGHT
+  ) {
+    resetWheelSpeedControl();
     handleRecoveryState();
     return;
   }
@@ -836,9 +1214,11 @@ void runControlLoop() {
     return;
   }
 
+  resetWheelSpeedControl();
   lineLostFrameCount++;
 
   if (lineLostFrameCount < LINE_LOST_RECOVERY_FRAMES) {
+    setDriveCommand(LINE_LOST_HOLD_PWM, LINE_LOST_HOLD_PWM);
     return;
   }
 
@@ -856,18 +1236,38 @@ void runControlLoop() {
 // ==================================================
 
 void applyLinePid() {
-  float error = (float)currentLinePosition;
+  int pidLinePosition = currentLinePosition;
+
+  if (branchMode == BRANCH_STRAIGHT) {
+    pidLinePosition = constrain(
+      pidLinePosition,
+      -STRAIGHT_BRANCH_POSITION_LIMIT,
+      STRAIGHT_BRANCH_POSITION_LIMIT
+    );
+  } else if (branchMode == BRANCH_LEFT || branchMode == BRANCH_RIGHT) {
+    pidLinePosition = constrain(
+      pidLinePosition,
+      -TURN_BRANCH_POSITION_LIMIT,
+      TURN_BRANCH_POSITION_LIMIT
+    );
+  }
+
+  float error = (float)pidLinePosition;
 
   if (INVERT_STEERING) {
     error = -error;
   }
 
-  pidIntegral += error;
+  if (Ki != 0.0f) {
+    pidIntegral += error;
 
-  if (pidIntegral > INTEGRAL_LIMIT) {
-    pidIntegral = INTEGRAL_LIMIT;
-  } else if (pidIntegral < -INTEGRAL_LIMIT) {
-    pidIntegral = -INTEGRAL_LIMIT;
+    if (pidIntegral > INTEGRAL_LIMIT) {
+      pidIntegral = INTEGRAL_LIMIT;
+    } else if (pidIntegral < -INTEGRAL_LIMIT) {
+      pidIntegral = -INTEGRAL_LIMIT;
+    }
+  } else {
+    pidIntegral = 0.0f;
   }
 
   float derivative = error - lastError;
@@ -891,14 +1291,26 @@ void applyLinePid() {
     minimumCommand = -MAX_CORNER_REVERSE_PWM;
   }
 
+  if (branchMode == BRANCH_STRAIGHT) {
+    steeringLimit = STRAIGHT_BRANCH_STEERING_LIMIT;
+  } else if (branchMode == BRANCH_LEFT || branchMode == BRANCH_RIGHT) {
+    steeringLimit = TURN_BRANCH_STEERING_LIMIT;
+  }
+
   steering = constrain(
     steering,
     -steeringLimit,
     steeringLimit
   );
 
-  int leftCommand = baseSpeed + (int)steering;
-  int rightCommand = baseSpeed - (int)steering;
+  int followSpeed = baseSpeed;
+
+  if (branchMode == BRANCH_LEFT || branchMode == BRANCH_RIGHT) {
+    followSpeed = min(baseSpeed, ACTIVE_BRANCH_SPEED);
+  }
+
+  int leftCommand = followSpeed + (int)steering;
+  int rightCommand = followSpeed - (int)steering;
 
   leftCommand = constrain(
     leftCommand,
@@ -912,7 +1324,9 @@ void applyLinePid() {
     ABSOLUTE_MAX_MOTOR_PWM
   );
 
-  setDriveCommand(leftCommand, rightCommand);
+  // Only normal line-following uses encoder speed control.  RAW_DRIVE,
+  // manual/IMU pivots, recovery and all stop paths still call setDriveCommand.
+  setFollowDriveCommand(leftCommand, rightCommand);
 }
 
 void resetPID() {
@@ -984,14 +1398,20 @@ void startForwardRecovery() {
   resetPID();
 }
 
-void handleRecoveryState() {
-  unsigned long elapsed = millis() - turnRecoveryStartTime;
+void finishLineRecovery() {
+  driveState = STATE_FOLLOW;
+  recoveryStopLatched = false;
+  forwardRecoveryAttempted = false;
 
-  if (elapsed < FORWARD_RECOVERY_TIME_MS) {
-    setDriveCommand(FORWARD_RECOVERY_PWM, FORWARD_RECOVERY_PWM);
-    return;
-  }
+  lineLostFrameCount = 0;
+  reacquireFrameCount = 0;
 
+  clearRecoveryHint();
+  resetPID();
+  applyLinePid();
+}
+
+void latchRecoveryStop() {
   followEnabled = false;
   driveState = STATE_STOPPED;
   recoveryStopLatched = true;
@@ -999,10 +1419,66 @@ void handleRecoveryState() {
   lineLostFrameCount = 0;
   reacquireFrameCount = 0;
 
-  clearRecoveryHint();
-  commandClearBranch();
+  // Preserve both the Pi-selected branch and the last reliable line side for
+  // C:REACQUIRE_LINE.  RESET, ESTOP and an explicit CLEAR remain authoritative.
   resetPID();
   brakeAndStopMotors();
+
+  digitalWrite(STATUS_LED, LOW);
+}
+
+void handleRecoveryState() {
+  bool lineCentered =
+    validLineForTracking &&
+    abs(currentLinePosition) <= REACQUIRE_POSITION_TOLERANCE;
+
+  if (lineCentered) {
+    reacquireFrameCount++;
+  } else {
+    reacquireFrameCount = 0;
+  }
+
+  if (reacquireFrameCount >= REACQUIRE_CONFIRM_FRAMES) {
+    finishLineRecovery();
+    return;
+  }
+
+  unsigned long elapsed = millis() - turnRecoveryStartTime;
+
+  if (driveState == STATE_RECOVER_FORWARD) {
+    if (elapsed < FORWARD_RECOVERY_TIME_MS) {
+      setDriveCommand(FORWARD_RECOVERY_PWM, FORWARD_RECOVERY_PWM);
+      return;
+    }
+
+    int direction = getFreshRecoveryHint();
+
+    if (direction > 0) {
+      driveState = STATE_RECOVER_RIGHT;
+    } else if (direction < 0) {
+      driveState = STATE_RECOVER_LEFT;
+    } else {
+      latchRecoveryStop();
+      return;
+    }
+
+    turnRecoveryStartTime = millis();
+    reacquireFrameCount = 0;
+    elapsed = 0;
+  }
+
+  if (elapsed >= MAX_TURN_RECOVERY_TIME_MS) {
+    latchRecoveryStop();
+    return;
+  }
+
+  if (driveState == STATE_RECOVER_RIGHT) {
+    setDriveCommand(TURN_RECOVERY_PWM, -TURN_RECOVERY_PWM);
+  } else if (driveState == STATE_RECOVER_LEFT) {
+    setDriveCommand(-TURN_RECOVERY_PWM, TURN_RECOVERY_PWM);
+  } else {
+    latchRecoveryStop();
+  }
 }
 
 // ==================================================
@@ -1050,6 +1526,8 @@ void setDriveCommand(int leftCommand, int rightCommand) {
     lastRightCommand,
     INVERT_RIGHT_MOTOR
   );
+
+  updateWarningLightFromMotorCommands();
 }
 
 int slewMotorCommand(int applied, int target) {
@@ -1102,6 +1580,7 @@ void coastMotorOutputs() {
   analogWrite(LEFT_LPWM_PIN, 0);
   analogWrite(RIGHT_RPWM_PIN, 0);
   analogWrite(RIGHT_LPWM_PIN, 0);
+  setWarningLight(false);
 }
 
 void applyBrakePulseToMotor(int rpwmPin, int lpwmPin) {
@@ -1110,6 +1589,7 @@ void applyBrakePulseToMotor(int rpwmPin, int lpwmPin) {
 }
 
 void brakeMotorOutputsBriefly() {
+  setWarningLight(true);
   applyBrakePulseToMotor(LEFT_RPWM_PIN, LEFT_LPWM_PIN);
   applyBrakePulseToMotor(RIGHT_RPWM_PIN, RIGHT_LPWM_PIN);
   delay(ACTIVE_BRAKE_TIME_MS);
@@ -1148,17 +1628,7 @@ void brakeAndStopMotors() {
 }
 
 void stopDueToNoFreshRecoveryHint() {
-  followEnabled = false;
-  driveState = STATE_STOPPED;
-  recoveryStopLatched = true;
-
-  lineLostFrameCount = 0;
-  reacquireFrameCount = 0;
-
-  clearRecoveryHint();
-  commandClearBranch();
-  resetPID();
-  brakeAndStopMotors();
+  latchRecoveryStop();
 }
 
 // ==================================================
@@ -1270,7 +1740,7 @@ void processCommand(String command) {
 
   if (command == "C:REACQUIRE_LINE") {
     noteValidCommand();
-    commandStart();
+    commandReacquireLine();
     return;
   }
 }
@@ -1303,6 +1773,21 @@ void commandStart() {
     return;
   }
 
+  // START can be published more than once by the supervisory stack.  A repeat
+  // must not reset PID/lost-frame/recovery state while the Arduino is already
+  // following or recovering a line.
+  if (
+    followEnabled &&
+    (
+      driveState == STATE_FOLLOW ||
+      driveState == STATE_RECOVER_FORWARD ||
+      driveState == STATE_RECOVER_LEFT ||
+      driveState == STATE_RECOVER_RIGHT
+    )
+  ) {
+    return;
+  }
+
   rawLeftCommand = 0;
   rawRightCommand = 0;
 
@@ -1315,6 +1800,36 @@ void commandStart() {
 
   clearRecoveryHint();
   resetPID();
+
+  digitalWrite(STATUS_LED, HIGH);
+}
+
+void commandReacquireLine() {
+  if (eStopActive) {
+    return;
+  }
+
+  recoveryStopLatched = false;
+
+  // The branch may have been held while STOPPED for longer than the normal
+  // command timeout.  Resume the same Pi-selected context for this one
+  // supervised recovery attempt.
+  if (branchMode != BRANCH_AUTO) {
+    branchModeSetTimeMs = millis();
+  }
+
+  rawLeftCommand = 0;
+  rawRightCommand = 0;
+  manualPivotPwm = 0;
+
+  followEnabled = true;
+  lineLostFrameCount = 0;
+  reacquireFrameCount = 0;
+
+  // Do not discard the preserved last-side hint.  If it has become too old,
+  // getFreshRecoveryHint() will safely refuse to pivot after the forward creep.
+  resetPID();
+  startForwardRecovery();
 
   digitalWrite(STATUS_LED, HIGH);
 }
@@ -1426,26 +1941,45 @@ void commandSetBranch(String payload) {
   payload.trim();
   payload.toUpperCase();
 
+  BranchMode requestedMode = BRANCH_AUTO;
+
   if (payload == "LEFT") {
-    branchMode = BRANCH_LEFT;
+    requestedMode = BRANCH_LEFT;
   } else if (payload == "RIGHT") {
-    branchMode = BRANCH_RIGHT;
+    requestedMode = BRANCH_RIGHT;
   } else if (payload == "STRAIGHT") {
-    branchMode = BRANCH_STRAIGHT;
+    requestedMode = BRANCH_STRAIGHT;
   } else if (payload == "AUTO") {
-    branchMode = BRANCH_AUTO;
+    requestedMode = BRANCH_AUTO;
+
+    if (branchMode == requestedMode) {
+      return;
+    }
+
+    branchMode = requestedMode;
     branchModeSetTimeMs = 0;
+    resetPID();
     return;
   } else {
     return;
   }
 
+  // Refresh the command lifetime but do not repeatedly reset the PID when the
+  // same Pi/RFID branch command is received again.
+  if (branchMode == requestedMode) {
+    branchModeSetTimeMs = millis();
+    return;
+  }
+
+  branchMode = requestedMode;
   branchModeSetTimeMs = millis();
+  resetPID();
 }
 
 void commandClearBranch() {
   branchMode = BRANCH_AUTO;
   branchModeSetTimeMs = 0;
+  resetPID();
 }
 
 void commandPivotLeft(int pwm) {
@@ -1581,92 +2115,75 @@ void reportStatus() {
     }
   }
 
+  // This must be one uninterrupted newline-terminated status message.  The
+  // existing Pi bridge uses readline() with a short timeout and rejects a
+  // partially transmitted frame before it reaches FAULT.
   Serial.print("A:STATE=");
   Serial.print(stateToText(driveState));
 
   Serial.print(";POS=");
   Serial.print(currentLinePosition);
-
   Serial.print(";L=");
   Serial.print(leftCopy);
-
   Serial.print(";R=");
   Serial.print(rightCopy);
-
   Serial.print(";ACTIVE=");
   Serial.print(activeSensorCount);
-
   Serial.print(";VALID=");
   Serial.print(validLineForTracking ? 1 : 0);
-
   Serial.print(";LOST=");
   Serial.print(lineLostFrameCount);
-
   Serial.print(";SPEED=");
   Serial.print(baseSpeed);
-
   Serial.print(";MAXPWM=");
   Serial.print(ABSOLUTE_MAX_MOTOR_PWM);
-
   Serial.print(";APPLIEDL=");
   Serial.print(lastLeftCommand);
-
   Serial.print(";APPLIEDR=");
   Serial.print(lastRightCommand);
-
   Serial.print(";PIVOT=");
   Serial.print(manualPivotPwm);
-
   Serial.print(";RAWL=");
   Serial.print(rawLeftCommand);
-
   Serial.print(";RAWR=");
   Serial.print(rawRightCommand);
-
-  Serial.print(";WSYNC=0");
-  Serial.print(";DL=0");
-  Serial.print(";DR=0");
-  Serial.print(";WCORR=0");
-
+  // Follow-only wheel-speed telemetry:
+  // DL / DR = requested-direction speed error in mm/s.
+  // WCORR = left PWM correction minus right PWM correction.
+  Serial.print(";WSYNC=");
+  Serial.print(WHEEL_SPEED_CONTROL_ENABLED ? 1 : 0);
+  Serial.print(";DL=");
+  Serial.print((long)leftSpeedErrorMmS);
+  Serial.print(";DR=");
+  Serial.print((long)rightSpeedErrorMmS);
+  Serial.print(";WCORR=");
+  Serial.print((long)(leftWheelPwmCorrection - rightWheelPwmCorrection));
   Serial.print(";ESTOP=");
   Serial.print(eStopActive ? 1 : 0);
-
   Serial.print(";FAULT=");
   Serial.print(faultCode);
-
   Serial.print(";HINT=");
   Serial.print(reportHint);
-
   Serial.print(";HAGE=");
   Serial.print(hintAge);
-
   Serial.print(";CAND=");
   Serial.print(recoveryCandidateDirection);
-
   Serial.print(";CFR=");
   Serial.print(recoveryCandidateFrames);
-
   Serial.print(";CLUST=");
   Serial.print(clusterCount);
-
   Serial.print(";JUNC=");
   Serial.print(junctionCandidate ? 1 : 0);
-
   Serial.print(";SEL=");
   Serial.print(selectedClusterIndex);
-
   Serial.print(";SSTART=");
   Serial.print(selectedClusterStart);
-
   Serial.print(";SEND=");
   Serial.print(selectedClusterEnd);
-
   Serial.print(";SPOS=");
   Serial.print(selectedClusterPosition);
-
   Serial.print(";SACT=");
   Serial.print(selectedClusterActiveCount);
-
   Serial.print(";BMODE=");
   Serial.print(branchModeToText(branchMode));
 
