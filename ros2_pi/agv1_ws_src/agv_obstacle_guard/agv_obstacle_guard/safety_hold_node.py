@@ -630,11 +630,26 @@ class SafetyHoldNode(Node):
             "RESUME_ACCEPTED_LINE_FOLLOW"
         )
 
+    def resume_line_follow(self, command=""):
+        # Arduino C:STOP clears branch mode. Keep branch setup and START on
+        # /cmd/raw so the bridge receives them in this order.
+        if command and self.resend_branch_on_junction_resume:
+            self.publish_raw_command(f"C:SET_BRANCH,{command}")
+            self.publish_raw_command("C:START")
+            return
+
+        self.publish_start()
+
     def accept_resume(self, event):
+        command = ""
+
+        if self.held_feature_state == "CLEARING_JUNCTION":
+            command = self.held_branch_command()
+
         self.hold_active = False
         self.hold_reason = "NONE"
 
-        self.publish_start()
+        self.resume_line_follow(command)
 
         self.publish_event(event)
         self.get_logger().info(event)
@@ -659,14 +674,10 @@ class SafetyHoldNode(Node):
         self.hold_active = False
         self.hold_reason = "NONE"
 
-        if (
-            mode == "JUNCTION_CLEARING"
-            and command
-            and self.resend_branch_on_junction_resume
-        ):
-            self.publish_raw_command(f"C:SET_BRANCH,{command}")
-
-        self.publish_start()
+        if mode == "JUNCTION_CLEARING":
+            self.resume_line_follow(command)
+        else:
+            self.publish_start()
 
         if mode == "JUNCTION_CLEARING":
             event = f"MANUAL_RESUME_ACCEPTED_JUNCTION_CLEARING_{command}"

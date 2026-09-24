@@ -49,6 +49,7 @@ class SafetyManagerNode(Node):
             "IDLE",
             "FOLLOW",
             "RECOVER_LEFT",
+            "RECOVER_FORWARD",
             "RECOVER_RIGHT",
             "PIVOT_LEFT",
             "PIVOT_RIGHT",

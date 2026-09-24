@@ -217,9 +217,6 @@ class FeatureActionNode(Node):
             Bool, "/agv_1/mission/active", self.mission_active_callback, 10
         )
         self.create_subscription(
-            Bool, "/agv_1/safety_hold/active", self.safety_hold_active_callback, 10
-        )
-        self.create_subscription(
             Bool, "/agv_1/safety_hold/active", self.safety_hold_callback, 10
         )
         self.create_subscription(
@@ -454,19 +451,24 @@ class FeatureActionNode(Node):
         active = bool(msg.data)
         now = time.time()
 
-        if active and not self.safety_hold_active:
+        if (
+            active
+            and not self.safety_hold_active
+            and self.pause_timeout_on_safety_hold
+        ):
             self.safety_hold_started_at = now
 
         elif not active and self.safety_hold_active:
-            if self.safety_hold_started_at > 0.0 and self.move_start_time > 0.0:
+            if (
+                self.pause_timeout_on_safety_hold
+                and self.safety_hold_started_at > 0.0
+                and self.move_start_time > 0.0
+            ):
                 self.move_start_time += now - self.safety_hold_started_at
 
             self.safety_hold_started_at = 0.0
 
         self.safety_hold_active = active
-
-    def safety_hold_active_callback(self, msg: Bool):
-        self.safety_hold_active = bool(msg.data)
 
     def manual_enable_callback(self, msg: Bool):
         self.manual_enable = bool(msg.data)
@@ -585,7 +587,18 @@ class FeatureActionNode(Node):
             )
             return
 
-        self.stop_robot()
+        # J2_2 zero-offset STRAIGHT: preserve the tested live behavior.
+        immediate_straight = (
+            node_name == "junction2_2"
+            and self.previous_route_node() in ("bench_1", "bench_2", "bench_3")
+            and offset_mm == 0.0
+            and not self.stop_at_junction_command_point
+            and not self.safety_hold_active
+        )
+        if immediate_straight:
+            self.apply_junction_line_speed()
+        else:
+            self.stop_robot()
 
         self.state = "WAITING_FOR_JUNCTION_COMMAND"
         self.pending_turn_command = "NONE"
@@ -1126,14 +1139,10 @@ class FeatureActionNode(Node):
         ]:
             return
 
-        if self.safety_hold_active:
+        if self.safety_hold_active and self.pause_timeout_on_safety_hold:
             return
 
         if self.move_start_time <= 0.0:
-            return
-
-        if self.pause_timeout_on_safety_hold and self.safety_hold_active:
-            self.move_start_time = time.time()
             return
 
         elapsed = time.time() - self.move_start_time
