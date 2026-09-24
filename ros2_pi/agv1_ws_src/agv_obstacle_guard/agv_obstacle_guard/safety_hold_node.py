@@ -742,6 +742,12 @@ class SafetyHoldNode(Node):
         if not msg.data:
             return
 
+        # A DERAILMENT hold has its own delayed authorization sequence. A
+        # supervisor resume request must never fall through to C:START, since
+        # that bypasses DERAIL_READY and defeats the five-second safety margin.
+        if self.hold_reason == "DERAILMENT":
+            return
+
         allowed, reason = (
             self.resume_allowed()
         )
@@ -788,6 +794,11 @@ class SafetyHoldNode(Node):
 
     def manual_resume_callback(self, msg):
         if not msg.data:
+            return
+
+        # Manual resume remains available for normal obstacle holds. For a
+        # derailment it must not bypass the passive line scan and Pi checks.
+        if self.hold_reason == "DERAILMENT":
             return
 
         allowed, reason, mode = self.manual_resume_allowed()
