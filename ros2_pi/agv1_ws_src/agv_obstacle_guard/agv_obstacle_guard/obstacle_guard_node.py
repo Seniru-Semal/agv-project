@@ -115,6 +115,7 @@ class ObstacleGuardNode(Node):
         self.state = "UNKNOWN"
         self.last_scan_time = None
         self.last_stop_publish_time = 0.0
+        self.arduino_state = "UNKNOWN"
 
         scan_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
@@ -128,6 +129,13 @@ class ObstacleGuardNode(Node):
             self.scan_topic,
             self.scan_callback,
             scan_qos,
+        )
+
+        self.create_subscription(
+            String,
+            f"/{self.robot_ns}/arduino/state",
+            self.arduino_state_callback,
+            10,
         )
 
         self.stop_pub = self.create_publisher(
@@ -192,7 +200,22 @@ class ObstacleGuardNode(Node):
         msg.data = float(distance_mm)
         self.min_distance_pub.publish(msg)
 
+    def arduino_state_callback(self, msg):
+        self.arduino_state = str(msg.data).strip().upper()
+
+    def arduino_is_passively_derail_held(self):
+        return self.arduino_state in {
+            "DERAIL_HOLD",
+            "DERAIL_READY",
+        }
+
     def publish_stop(self, force=False):
+        # The Arduino guarantees zero motor output in these states and must
+        # keep scanning the IR array. C:STOP would change it to IDLE and erase
+        # the passive re-alignment path. E-stop still uses its own command.
+        if self.arduino_is_passively_derail_held():
+            return
+
         now = time.monotonic()
 
         if not force:
