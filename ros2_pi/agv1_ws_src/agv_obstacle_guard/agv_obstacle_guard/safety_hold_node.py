@@ -58,6 +58,11 @@ class SafetyHoldNode(Node):
             1.0,
         )
 
+        self.declare_parameter(
+            "derail_resume_delay_sec",
+            5.0,
+        )
+
         self.robot_ns = str(
             self.get_parameter(
                 "robot_ns"
@@ -106,6 +111,12 @@ class SafetyHoldNode(Node):
             ).value
         )
 
+        self.derail_resume_delay_sec = float(
+            self.get_parameter(
+                "derail_resume_delay_sec"
+            ).value
+        )
+
         self.obstacle_state = "UNKNOWN"
 
         self.mission_active = False
@@ -115,6 +126,7 @@ class SafetyHoldNode(Node):
 
         self.safety_ok = False
         self.bridge_connected = False
+        self.arduino_state = "UNKNOWN"
 
         self.hold_active = False
         self.hold_reason = "NONE"
@@ -129,6 +141,7 @@ class SafetyHoldNode(Node):
         self.last_stop_publish_time = 0.0
         self.last_status_publish_time = 0.0
         self.last_auto_resume_time = 0.0
+        self.derail_ready_since = None
 
         status_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
@@ -190,6 +203,13 @@ class SafetyHoldNode(Node):
             Bool,
             f"/{self.robot_ns}/bridge_connected",
             self.bridge_callback,
+            10,
+        )
+
+        self.create_subscription(
+            String,
+            f"/{self.robot_ns}/arduino/state",
+            self.arduino_state_callback,
             10,
         )
 
@@ -364,6 +384,20 @@ class SafetyHoldNode(Node):
     def mission_active_callback(self, msg):
         self.mission_active = bool(msg.data)
 
+        if (
+            not self.mission_active
+            and self.hold_active
+            and self.hold_reason == "DERAILMENT"
+        ):
+            # Mission cancellation must disarm passive line scanning as well as
+            # preventing authorization. C:STOP is authoritative and clears the
+            # preserved branch context.
+            self.publish_stop(force=True)
+            self.clear_hold_without_start(
+                "DERAIL_HOLD_DISARMED_MISSION_INACTIVE"
+            )
+            return
+
         stop_states = {
             "STOPPED",
             "SENSOR_TIMEOUT",
@@ -408,6 +442,43 @@ class SafetyHoldNode(Node):
             msg.data
         )
 
+    def arduino_state_callback(self, msg):
+        self.arduino_state = self.normalize(msg.data)
+
+        if self.arduino_state == "DERAIL_HOLD":
+            self.derail_ready_since = None
+            self.engage_derail_hold()
+            return
+
+        if self.arduino_state == "DERAIL_READY":
+            self.engage_derail_hold()
+            self.publish_event("DERAIL_LINE_REACQUIRED_WAITING_FOR_SAFETY")
+            self.publish_status(force=True)
+
+    def engage_derail_hold(self):
+        if self.hold_active:
+            # A simultaneous obstacle hold does not need another C:STOP here:
+            # DERAIL_HOLD/DERAIL_READY are already stationary. Keeping the
+            # Arduino in that state lets it continue its passive IR scan.
+            return
+
+        self.hold_active = True
+        self.hold_reason = "DERAILMENT"
+        self.held_mission_state = self.mission_state
+        self.held_feature_state = self.feature_state
+        self.held_turn_state = self.turn_state
+        self.held_junction_command = self.last_junction_command
+        self.derail_ready_since = None
+
+        event = (
+            f"DERAIL_HOLD_LATCHED_MISSION_{self.held_mission_state}"
+            f"_FEATURE_{self.held_feature_state}"
+            f"_TURN_{self.held_turn_state}"
+        )
+        self.publish_event(event)
+        self.get_logger().warn(event)
+        self.publish_status(force=True)
+
     def engage_hold(self, reason):
         if not self.hold_active:
             self.hold_active = True
@@ -445,6 +516,12 @@ class SafetyHoldNode(Node):
             )
 
         else:
+            if self.hold_reason == "DERAILMENT":
+                # The Arduino is already stopped. Do not convert its passive
+                # line-reacquisition state into IDLE with C:STOP.
+                self.publish_status(force=True)
+                return
+
             self.publish_stop()
 
         self.publish_status(force=True)
@@ -571,6 +648,58 @@ class SafetyHoldNode(Node):
             return command
 
         return ""
+
+    def derail_resume_allowed(self):
+        if self.hold_reason != "DERAILMENT":
+            return False, "NOT_A_DERAIL_HOLD"
+
+        allowed, reason = self.resume_allowed()
+
+        if not allowed:
+            self.derail_ready_since = None
+            return False, reason
+
+        if self.arduino_state != "DERAIL_READY":
+            self.derail_ready_since = None
+            return False, "ARDUINO_NOT_DERAIL_READY"
+
+        if self.derail_ready_since is None:
+            self.derail_ready_since = time.monotonic()
+            self.publish_event("DERAIL_SAFETY_DELAY_STARTED")
+            return False, "DERAIL_SAFETY_DELAY_RUNNING"
+
+        elapsed = time.monotonic() - self.derail_ready_since
+
+        if elapsed < self.derail_resume_delay_sec:
+            return False, "DERAIL_SAFETY_DELAY_RUNNING"
+
+        return True, "DERAIL_RESUME_ALLOWED"
+
+    def authorize_derail_resume(self):
+        command = ""
+
+        if self.held_feature_state == "CLEARING_JUNCTION":
+            command = self.held_branch_command()
+
+            if not command:
+                self.publish_event("DERAIL_RESUME_REJECTED_NO_HELD_BRANCH_COMMAND")
+                self.get_logger().warn("DERAIL_RESUME_REJECTED_NO_HELD_BRANCH_COMMAND")
+                return
+
+        # Keep branch setup and resume authorization on the raw topic so their
+        # serial order is deterministic. The Arduino accepts authorization only
+        # while it remains stationary in DERAIL_READY.
+        if command:
+            self.publish_raw_command(f"C:SET_BRANCH,{command}")
+
+        self.publish_raw_command("C:AUTHORIZE_DERAIL_RESUME")
+
+        self.hold_active = False
+        self.hold_reason = "NONE"
+        self.publish_event("DERAIL_RESUME_AUTHORIZED")
+        self.get_logger().info("DERAIL_RESUME_AUTHORIZED")
+        self.clear_held_states()
+        self.publish_status(force=True)
 
     def manual_resume_allowed(self):
         allowed, reason = self.resume_allowed()
@@ -733,6 +862,7 @@ class SafetyHoldNode(Node):
         self.held_feature_state = "UNKNOWN"
         self.held_turn_state = "UNKNOWN"
         self.held_junction_command = "NONE"
+        self.derail_ready_since = None
 
     def clear_hold_without_start(self, event):
         self.hold_active = False
@@ -745,6 +875,20 @@ class SafetyHoldNode(Node):
     def hold_state(self):
         if not self.hold_active:
             return "CLEAR"
+
+        if self.hold_reason == "DERAILMENT":
+            if self.arduino_state == "DERAIL_READY":
+                if self.derail_ready_since is None:
+                    return "HOLD_DERAILMENT_LINE_STABLE"
+
+                elapsed = time.monotonic() - self.derail_ready_since
+
+                if elapsed < self.derail_resume_delay_sec:
+                    return "HOLD_DERAILMENT_SAFETY_DELAY"
+
+                return "HOLD_DERAILMENT_READY"
+
+            return "HOLD_DERAILMENT_WAITING_FOR_LINE"
 
         if (
             self.obstacle_state
@@ -813,6 +957,15 @@ class SafetyHoldNode(Node):
                 self.clear_hold_without_start(
                     "AUTO_CLEAR_MISSION_INACTIVE"
                 )
+                return
+
+            if self.hold_reason == "DERAILMENT":
+                allowed, _ = self.derail_resume_allowed()
+
+                if allowed:
+                    self.authorize_derail_resume()
+
+                self.publish_status()
                 return
 
             if self.local_auto_resume_enabled:

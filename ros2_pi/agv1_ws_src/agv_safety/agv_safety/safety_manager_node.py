@@ -51,6 +51,8 @@ class SafetyManagerNode(Node):
             "RECOVER_LEFT",
             "RECOVER_FORWARD",
             "RECOVER_RIGHT",
+            "DERAIL_HOLD",
+            "DERAIL_READY",
             "PIVOT_LEFT",
             "PIVOT_RIGHT",
             "RAW_DRIVE",

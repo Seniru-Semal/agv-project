@@ -258,6 +258,8 @@ enum DriveState {
   STATE_RECOVER_LEFT,
   STATE_RECOVER_RIGHT,
   STATE_RECOVER_FORWARD,
+  STATE_DERAIL_HOLD,
+  STATE_DERAIL_READY,
   STATE_MANUAL_PIVOT_LEFT,
   STATE_MANUAL_PIVOT_RIGHT,
   STATE_RAW_DRIVE,
@@ -1181,6 +1183,19 @@ void runControlLoop() {
     return;
   }
 
+  // A failed automatic recovery is a controlled stationary hold, not a
+  // terminal fault. Keep scanning so a person can realign the AGV, but never
+  // command motion until the Pi has completed its safety authorization.
+  if (
+    driveState == STATE_DERAIL_HOLD ||
+    driveState == STATE_DERAIL_READY
+  ) {
+    resetWheelSpeedControl();
+    readSensorsSwitching();
+    handleDerailHoldState();
+    return;
+  }
+
   if (!followEnabled) {
     resetWheelSpeedControl();
     if (driveState != STATE_STOPPED) {
@@ -1413,7 +1428,7 @@ void finishLineRecovery() {
 
 void latchRecoveryStop() {
   followEnabled = false;
-  driveState = STATE_STOPPED;
+  driveState = STATE_DERAIL_HOLD;
   recoveryStopLatched = true;
 
   lineLostFrameCount = 0;
@@ -1425,6 +1440,35 @@ void latchRecoveryStop() {
   brakeAndStopMotors();
 
   digitalWrite(STATUS_LED, LOW);
+}
+
+void handleDerailHoldState() {
+  // Every path into this state must remain stationary. The Pi may authorize
+  // a later resume only after its own mission, obstacle and safety checks.
+  stopMotors();
+
+  bool lineCentered =
+    validLineForTracking &&
+    abs(currentLinePosition) <= REACQUIRE_POSITION_TOLERANCE;
+
+  if (driveState == STATE_DERAIL_READY) {
+    if (!lineCentered) {
+      driveState = STATE_DERAIL_HOLD;
+      reacquireFrameCount = 0;
+    }
+    return;
+  }
+
+  if (lineCentered) {
+    reacquireFrameCount++;
+  } else {
+    reacquireFrameCount = 0;
+  }
+
+  if (reacquireFrameCount >= REACQUIRE_CONFIRM_FRAMES) {
+    driveState = STATE_DERAIL_READY;
+    digitalWrite(STATUS_LED, HIGH);
+  }
 }
 
 void handleRecoveryState() {
@@ -1743,6 +1787,12 @@ void processCommand(String command) {
     commandReacquireLine();
     return;
   }
+
+  if (command == "C:AUTHORIZE_DERAIL_RESUME") {
+    noteValidCommand();
+    commandAuthorizeDerailResume();
+    return;
+  }
 }
 
 void noteValidCommand() {
@@ -1831,6 +1881,37 @@ void commandReacquireLine() {
   resetPID();
   startForwardRecovery();
 
+  digitalWrite(STATUS_LED, HIGH);
+}
+
+void commandAuthorizeDerailResume() {
+  if (
+    eStopActive ||
+    !recoveryStopLatched ||
+    driveState != STATE_DERAIL_READY
+  ) {
+    return;
+  }
+
+  // Refuse authorization if the line disappeared after DERAIL_READY was
+  // reported but before the Pi's five-second safety delay completed.
+  if (
+    !validLineForTracking ||
+    abs(currentLinePosition) > REACQUIRE_POSITION_TOLERANCE
+  ) {
+    driveState = STATE_DERAIL_HOLD;
+    reacquireFrameCount = 0;
+    return;
+  }
+
+  recoveryStopLatched = false;
+  followEnabled = true;
+  driveState = STATE_FOLLOW;
+  forwardRecoveryAttempted = false;
+  lineLostFrameCount = 0;
+  reacquireFrameCount = 0;
+
+  resetPID();
   digitalWrite(STATUS_LED, HIGH);
 }
 
@@ -1977,6 +2058,22 @@ void commandSetBranch(String payload) {
 }
 
 void commandClearBranch() {
+  // CLEAR_BRANCH is an explicit supervisory cancellation of any pending
+  // junction context. It must also disarm a passive derailment resume.
+  if (
+    driveState == STATE_DERAIL_HOLD ||
+    driveState == STATE_DERAIL_READY
+  ) {
+    followEnabled = false;
+    recoveryStopLatched = false;
+    forwardRecoveryAttempted = false;
+    lineLostFrameCount = 0;
+    reacquireFrameCount = 0;
+    driveState = STATE_IDLE;
+    stopMotors();
+    digitalWrite(STATUS_LED, LOW);
+  }
+
   branchMode = BRANCH_AUTO;
   branchModeSetTimeMs = 0;
   resetPID();
@@ -2235,6 +2332,12 @@ const char* stateToText(int state) {
 
     case STATE_RECOVER_FORWARD:
       return "RECOVER_FORWARD";
+
+    case STATE_DERAIL_HOLD:
+      return "DERAIL_HOLD";
+
+    case STATE_DERAIL_READY:
+      return "DERAIL_READY";
 
     case STATE_MANUAL_PIVOT_LEFT:
       return "PIVOT_LEFT";
