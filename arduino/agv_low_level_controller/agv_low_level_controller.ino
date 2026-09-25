@@ -110,7 +110,7 @@ const int LINE_TOTAL_STRENGTH_MIN = 20;
 
 // Keep full 13-channel SIG telemetry off during normal driving.  Turn this on
 // only for stationary calibration or a short supervised diagnostic run.
-const bool REPORT_SENSOR_SIGNALS = false;
+const bool REPORT_SENSOR_SIGNALS = true;  // Temporary IR diagnostic telemetry
 
 const int ANALOG_SAMPLES = 5;
 const int ANALOG_SAMPLE_DELAY_US = 100;
@@ -1197,6 +1197,11 @@ void runControlLoop() {
   }
 
   if (!followEnabled) {
+    // Keep acquiring IR data while stationary so IDLE is a safe diagnostic
+    // state.  This only refreshes telemetry; motors remain stopped and a
+    // detected line never starts the AGV by itself.
+    readSensorsSwitching();
+
     resetWheelSpeedControl();
     if (driveState != STATE_STOPPED) {
       driveState = STATE_IDLE;
