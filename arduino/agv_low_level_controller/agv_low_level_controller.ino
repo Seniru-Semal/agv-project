@@ -51,8 +51,8 @@ const int RIGHT_LPWM_PIN = 10;
 // Encoders
 const int LEFT_ENC_A_PIN = 2;
 const int LEFT_ENC_B_PIN = 3;
-const int RIGHT_ENC_A_PIN = 18;
-const int RIGHT_ENC_B_PIN = 19;
+const int RIGHT_ENC_A_PIN = 20;
+const int RIGHT_ENC_B_PIN = 21;
 
 const int STATUS_LED = LED_BUILTIN;
 
@@ -90,19 +90,19 @@ const int MIN_CONTRAST = 20;
 // White-line detection:
 // signalValues[i] >= SENSOR_SIGNAL_THRESHOLD[i]
 const int SENSOR_SIGNAL_THRESHOLD[SENSOR_COUNT] = {
-  /* A0  rightmost */ 400,
-  /* A1            */ 400,
-  /* A2            */ 400,
-  /* A3            */ 400,
-  /* A4            */ 400,
-  /* A5            */ 400,
-  /* A6  centre    */ 400,
-  /* A7            */ 400,
-  /* A8            */ 400,
-  /* A9            */ 400,
-  /* A10           */ 400,
-  /* A11           */ 400,
-  /* A12 leftmost  */ 400
+  /* A0  rightmost */ 300,
+  /* A1            */ 300,
+  /* A2            */ 300,
+  /* A3            */ 300,
+  /* A4            */ 300,
+  /* A5            */ 300,
+  /* A6  centre    */ 300,
+  /* A7            */ 300,
+  /* A8            */ 300,
+  /* A9            */ 300,
+  /* A10           */ 300,
+  /* A11           */ 300,
+  /* A12 leftmost  */ 300
 };
 
 const int LINE_ACTIVE_MIN = 1;
@@ -110,7 +110,7 @@ const int LINE_TOTAL_STRENGTH_MIN = 20;
 
 // Keep full 13-channel SIG telemetry off during normal driving.  Turn this on
 // only for stationary calibration or a short supervised diagnostic run.
-const bool REPORT_SENSOR_SIGNALS = true;  // Temporary IR diagnostic telemetry
+const bool REPORT_SENSOR_SIGNALS = false;  // Temporary IR diagnostic telemetry
 
 const int ANALOG_SAMPLES = 5;
 const int ANALOG_SAMPLE_DELAY_US = 100;
