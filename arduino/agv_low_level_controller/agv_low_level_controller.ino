@@ -90,19 +90,19 @@ const int MIN_CONTRAST = 20;
 // White-line detection:
 // signalValues[i] >= SENSOR_SIGNAL_THRESHOLD[i]
 const int SENSOR_SIGNAL_THRESHOLD[SENSOR_COUNT] = {
-  /* A0  rightmost */ 300,
-  /* A1            */ 300,
-  /* A2            */ 300,
-  /* A3            */ 300,
-  /* A4            */ 300,
-  /* A5            */ 300,
-  /* A6  centre    */ 300,
-  /* A7            */ 300,
-  /* A8            */ 300,
-  /* A9            */ 300,
-  /* A10           */ 300,
-  /* A11           */ 300,
-  /* A12 leftmost  */ 300
+  /* A0  rightmost */ 350,
+  /* A1            */ 350,
+  /* A2            */ 350,
+  /* A3            */ 350,
+  /* A4            */ 350,
+  /* A5            */ 350,
+  /* A6  centre    */ 350,
+  /* A7            */ 350,
+  /* A8            */ 350,
+  /* A9            */ 350,
+  /* A10           */ 350,
+  /* A11           */ 350,
+  /* A12 leftmost  */ 350
 };
 
 const int LINE_ACTIVE_MIN = 1;
@@ -110,7 +110,7 @@ const int LINE_TOTAL_STRENGTH_MIN = 20;
 
 // Keep full 13-channel SIG telemetry off during normal driving.  Turn this on
 // only for stationary calibration or a short supervised diagnostic run.
-const bool REPORT_SENSOR_SIGNALS = false;  // Temporary IR diagnostic telemetry
+const bool REPORT_SENSOR_SIGNALS = true;  // Temporary IR diagnostic telemetry
 
 const int ANALOG_SAMPLES = 5;
 const int ANALOG_SAMPLE_DELAY_US = 100;
@@ -125,9 +125,9 @@ const int SENSOR_RELEASE_HYSTERESIS = 15;
 // PID settings
 // ==================================================
 
-float Kp = 0.115;
+float Kp = 0.15;
 float Ki = 0.00;
-float Kd = 1.0;
+float Kd = 2.5;
 
 int baseSpeed = 40;
 
@@ -167,8 +167,8 @@ const float FOLLOW_SPEED_MM_S_AT_PWM_80 = 1200.0f;
 
 // These are wheel-speed PID gains in PWM per (mm/s).  They apply only while
 // STATE_FOLLOW owns the motors; raw drive, pivots and recovery remain direct.
-float wheelSpeedKp = 0.040f;
-float wheelSpeedKi = 0.010f;
+float wheelSpeedKp = 0.050f;
+float wheelSpeedKi = 0.015f;
 float wheelSpeedKd = 0.000f;
 const float WHEEL_SPEED_INTEGRAL_LIMIT = 800.0f;
 const int MAX_WHEEL_SPEED_CORRECTION_PWM = 20;
@@ -190,12 +190,12 @@ const int LINE_LOST_RECOVERY_FRAMES = 5;
 const int FORWARD_RECOVERY_PWM = 25;
 const unsigned long FORWARD_RECOVERY_TIME_MS = 850;
 
-const int TURN_RECOVERY_PWM = 30;
+const int TURN_RECOVERY_PWM = 25;
 
 const int CORNER_DETECT_POSITION = 220;
 
 const int REACQUIRE_POSITION_TOLERANCE = 170;
-const int REACQUIRE_CONFIRM_FRAMES = 3;
+const int REACQUIRE_CONFIRM_FRAMES = 5;
 const unsigned long MAX_TURN_RECOVERY_TIME_MS = 2500;
 
 const int RECOVERY_DIRECTION_MIN_POSITION = 40;
